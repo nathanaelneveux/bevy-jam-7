@@ -51,3 +51,7 @@ codegen-units = 1
 # Do a second optimization pass over the entire program, including dependencies.
 # Slows compile times, marginal improvements.
 lto = "thin"
+
+[[example]]
+name = "chunk_collider_benchmark"
+path = "benchmarks/chunk_collider_benchmark.rs"
