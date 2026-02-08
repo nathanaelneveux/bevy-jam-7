@@ -1,0 +1,53 @@
+[package]
+name = "bevy_new_minimal"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+avian3d = { git = "https://github.com/Jondolf/avian", rev = "53443b162e7cc4ad7b5133575d9e416e9f8000ed" }
+bevy = "0.18"
+bevy-inspector-egui = "0.36.0"
+bevy_asset_loader = "0.25.0"
+bevy_enhanced_input = "0.23.2"
+bevy_hanabi = "0.18.0"
+bevy_voxel_world = { git = "https://github.com/nathanaelneveux/bevy_voxel_world", branch = "wasm-support" }
+binary-greedy-meshing = "0.5.2"
+# Set max log levels. This helps avoid unwanted low-severity log spam, which can affect performance.
+log = { version = "0.4", features = [
+    "max_level_debug",
+    "release_max_level_warn",
+] }
+noiz = "0.4.0"
+tracing = { version = "0.1", features = [
+    "max_level_debug",
+    "release_max_level_warn",
+] }
+
+# Idiomatic Bevy code often triggers these lints, and the CI workflow treats them as errors.
+# In some cases they may still signal poor code quality however, so consider commenting out these lines.
+[lints.clippy]
+# Bevy supplies arguments to systems via dependency injection, so it's natural for systems to
+# request more than 7 arguments -- which triggers this lint.
+too_many_arguments = "allow"
+# Queries that access many components may trigger this lint.
+type_complexity = "allow"
+
+# Enable a small amount of optimization in the dev profile.
+[profile.dev]
+opt-level = 1
+
+# Enable a large amount of optimization in the dev profile for dependencies.
+[profile.dev.package."*"]
+opt-level = 3
+
+# Remove expensive debug assertions due to <https://github.com/bevyengine/bevy/issues/14291>
+[profile.dev.package.wgpu-types]
+debug-assertions = false
+
+[profile.release]
+# Compile the entire crate as one unit.
+# Slows compile times, marginal improvements.
+codegen-units = 1
+# Do a second optimization pass over the entire program, including dependencies.
+# Slows compile times, marginal improvements.
+lto = "thin"
