@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy_enhanced_input::prelude::*;
 use bevy_voxel_world::prelude::VoxelWorldCamera;
 
-use crate::cave_world::CaveWorld;
+use crate::{InspectorMode, cave_world::CaveWorld};
 
 const LOOK_SENSITIVITY: f32 = 0.002;
 const PLAYER_WALK_SPEED: f32 = 8.5;
@@ -91,9 +91,14 @@ fn spawn_player(mut commands: Commands) {
 
 fn look_camera(
     mouse_motion: Res<AccumulatedMouseMotion>,
+    inspector_mode: Res<InspectorMode>,
     player: Single<(&mut Transform, &mut ControllerState), With<Player>>,
     player_camera: Single<&mut Transform, (With<PlayerCamera>, Without<Player>)>,
 ) {
+    if inspector_mode.enabled {
+        return;
+    }
+
     let look = mouse_motion.delta * -LOOK_SENSITIVITY;
     if look == Vec2::ZERO {
         return;
