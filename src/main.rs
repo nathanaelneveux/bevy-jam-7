@@ -7,6 +7,7 @@ use avian3d::prelude::*;
 use bevy::asset::AssetMetaCheck;
 use bevy::input::common_conditions::input_toggle_active;
 use bevy::prelude::*;
+use bevy_enhanced_input::prelude::EnhancedInputPlugin;
 use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
 
 use cave_world::CaveWorldPlugin;
@@ -19,6 +20,7 @@ fn main() {
             meta_check: AssetMetaCheck::Never,
             ..default()
         }))
+        .add_plugins(EnhancedInputPlugin)
         .add_plugins(PhysicsPlugins::default())
         .add_plugins(EguiPlugin::default())
         .add_plugins(

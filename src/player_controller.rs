@@ -1,6 +1,7 @@
 use avian3d::prelude::*;
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
+use bevy_enhanced_input::prelude::*;
 use bevy_voxel_world::prelude::VoxelWorldCamera;
 
 use crate::cave_world::CaveWorld;
@@ -19,7 +20,8 @@ pub struct PlayerControllerPlugin;
 
 impl Plugin for PlayerControllerPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_player)
+        app.add_input_context::<Player>()
+            .add_systems(Startup, spawn_player)
             .add_systems(Update, look_camera)
             .add_systems(FixedUpdate, player_move_and_slide);
     }
@@ -31,6 +33,18 @@ struct Player;
 #[derive(Component)]
 struct PlayerCamera;
 
+#[derive(InputAction)]
+#[action_output(Vec2)]
+struct MoveAction;
+
+#[derive(InputAction)]
+#[action_output(bool)]
+struct JumpAction;
+
+#[derive(InputAction)]
+#[action_output(bool)]
+struct SprintAction;
+
 #[derive(Component)]
 struct ControllerState {
     pitch: f32,
@@ -41,6 +55,20 @@ fn spawn_player(mut commands: Commands) {
     commands
         .spawn((
             Player,
+            actions!(Player[
+                (
+                    Action::<MoveAction>::new(),
+                    Bindings::spawn(Cardinal::wasd_keys()),
+                ),
+                (
+                    Action::<JumpAction>::new(),
+                    bindings![KeyCode::Space],
+                ),
+                (
+                    Action::<SprintAction>::new(),
+                    bindings![KeyCode::ShiftLeft, KeyCode::ShiftRight],
+                ),
+            ]),
             ControllerState {
                 pitch: 0.0,
                 grounded: false,
@@ -85,8 +113,11 @@ fn look_camera(
 
 fn player_move_and_slide(
     time: Res<Time>,
-    keys: Res<ButtonInput<KeyCode>>,
     move_and_slide: MoveAndSlide,
+    movement_actions: Query<&Action<MoveAction>>,
+    jump_actions: Query<&Action<JumpAction>>,
+    jump_events: Query<&ActionEvents, With<Action<JumpAction>>>,
+    sprint_actions: Query<&Action<SprintAction>>,
     player: Single<
         (
             Entity,
@@ -94,33 +125,35 @@ fn player_move_and_slide(
             &mut Transform,
             &mut LinearVelocity,
             &mut ControllerState,
+            &Actions<Player>,
         ),
         With<Player>,
     >,
 ) {
-    let (entity, collider, mut transform, mut linear_velocity, mut controller) =
+    let (entity, collider, mut transform, mut linear_velocity, mut controller, actions) =
         player.into_inner();
 
-    let mut wish = Vec3::ZERO;
-    if keys.pressed(KeyCode::KeyW) {
-        wish.z -= 1.0;
-    }
-    if keys.pressed(KeyCode::KeyS) {
-        wish.z += 1.0;
-    }
-    if keys.pressed(KeyCode::KeyA) {
-        wish.x -= 1.0;
-    }
-    if keys.pressed(KeyCode::KeyD) {
-        wish.x += 1.0;
-    }
+    let Some(movement) = movement_actions.iter_many(actions).next() else {
+        return;
+    };
+    let Some(jump) = jump_actions.iter_many(actions).next() else {
+        return;
+    };
+    let Some(jump_events) = jump_events.iter_many(actions).next() else {
+        return;
+    };
+    let Some(sprint) = sprint_actions.iter_many(actions).next() else {
+        return;
+    };
 
     let mut move_speed = PLAYER_WALK_SPEED;
-    if keys.pressed(KeyCode::ShiftLeft) {
+    if **sprint {
         move_speed *= PLAYER_SPRINT_MULTIPLIER;
     }
 
-    let desired_horizontal = transform.rotation * (wish.normalize_or_zero() * move_speed);
+    let movement = **movement;
+    let wish = Vec3::new(movement.x, 0.0, -movement.y).normalize_or_zero();
+    let desired_horizontal = transform.rotation * (wish * move_speed);
     let mut desired_velocity = Vec3::new(
         desired_horizontal.x,
         linear_velocity.y,
@@ -128,7 +161,7 @@ fn player_move_and_slide(
     );
 
     if controller.grounded {
-        if keys.just_pressed(KeyCode::Space) {
+        if **jump && jump_events.contains(ActionEvents::START) {
             desired_velocity.y = PLAYER_JUMP_SPEED;
             controller.grounded = false;
         } else {
