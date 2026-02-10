@@ -1,6 +1,18 @@
-use std::collections::HashMap;
+//! Enemy AI prototype module.
+//!
+//! This module combines three systems into a jam-friendly, data-driven enemy stack:
+//! - `bevy_common_assets` for external archetype/spawn configuration (`*.enemy.ron`).
+//! - `big-brain` for utility-style intent selection.
+//! - `bevy_northstar` for voxel-grid pathfinding.
+//!
+//! The intent is to make enemy authoring fast:
+//! - tune archetypes in `assets/enemies/descent.enemy.ron`
+//! - hot-reload config while the game runs
+//! - watch live "thinking" state in a lightweight debug HUD.
 
-use bevy::prelude::*;
+use std::{collections::HashMap, fmt::Display};
+
+use bevy::{asset::AssetEvent, prelude::*};
 use bevy_common_assets::ron::RonAssetPlugin;
 use bevy_northstar::prelude::*;
 use big_brain::prelude::*;
@@ -11,11 +23,18 @@ use crate::{
     player_controller::Player,
 };
 
+/// RON asset path for the enemy prototype config.
 const ENEMY_CONFIG_PATH: &str = "enemies/descent.enemy.ron";
+/// Render radius for the debug enemy sphere.
 const ENEMY_RENDER_RADIUS: f32 = 0.35;
+/// Offset from cell min corner to center in world space.
 const ENEMY_CELL_CENTER_OFFSET: f32 = 0.5;
+/// Distance threshold for snapping to the next path cell.
 const ENEMY_POSITION_TOLERANCE: f32 = 0.05;
+/// Font size for the on-screen enemy thought debug panel.
+const ENEMY_DEBUG_FONT_SIZE: f32 = 14.0;
 
+/// Plugin that wires config loading, utility AI, pathfinding, and debug UI.
 pub struct EnemyAiPlugin;
 
 impl Plugin for EnemyAiPlugin {
@@ -27,7 +46,8 @@ impl Plugin for EnemyAiPlugin {
         ))
         .init_resource::<EnemyConfigState>()
         .init_resource::<EnemyArchetypeLibrary>()
-        .add_systems(Startup, load_enemy_ai_config)
+        .init_resource::<EnemyDebugOverlay>()
+        .add_systems(Startup, (load_enemy_ai_config, spawn_enemy_debug_overlay_ui))
         .add_systems(
             PreUpdate,
             (
@@ -39,7 +59,10 @@ impl Plugin for EnemyAiPlugin {
         .add_systems(
             Update,
             (
-                initialize_enemy_ai_from_config,
+                initialize_or_reload_enemy_ai_from_config,
+                toggle_enemy_debug_overlay,
+                update_enemy_debug_overlay_ui,
+                draw_enemy_thought_gizmos,
                 move_enemy_agents.after(PathingSet),
                 clear_pathfinding_failures,
             ),
@@ -47,40 +70,109 @@ impl Plugin for EnemyAiPlugin {
     }
 }
 
+/// Tracks load/reload lifecycle for the external enemy config asset.
 #[derive(Resource, Default)]
 struct EnemyConfigState {
+    /// Asset handle for `EnemyAiConfig`.
     handle: Handle<EnemyAiConfig>,
+    /// Whether initial spawn has been completed.
     initialized: bool,
+    /// Whether a hot reload should be applied on next update.
+    needs_reload: bool,
 }
 
+/// Runtime lookup table for archetypes by ID.
 #[derive(Resource, Default)]
 struct EnemyArchetypeLibrary(HashMap<String, EnemyArchetypeConfig>);
 
+/// Defines the single active pathfinding grid used by enemies.
 #[derive(Resource, Clone, Copy)]
 struct EnemyNavigationGrid {
+    /// Entity that owns the Northstar grid component.
     entity: Entity,
+    /// Inclusive world-space origin (minimum corner) for grid mapping.
     world_min: IVec3,
+    /// Grid dimensions in cells.
     dimensions: UVec3,
 }
 
+/// Marker for cleanup/rebuild of the spawned nav grid entity.
+#[derive(Component)]
+struct EnemyNavigationGridMarker;
+
+/// Runtime debug state written by scorers/actions and visualized in HUD/gizmos.
+#[derive(Component, Default)]
+struct EnemyThoughtState {
+    /// Last utility score produced by the range scorer.
+    utility: f32,
+    /// Last measured distance from enemy to player.
+    player_distance: f32,
+    /// Current high-level intent.
+    intent: EnemyIntent,
+}
+
+/// High-level intent labels used for debugging.
+#[derive(Clone, Copy, Debug, Default)]
+enum EnemyIntent {
+    /// No active pursuit; waiting/idle behavior.
+    #[default]
+    Idle,
+    /// Pursuit behavior currently active.
+    Chasing,
+}
+
+impl Display for EnemyIntent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Idle => write!(f, "Idle"),
+            Self::Chasing => write!(f, "Chasing"),
+        }
+    }
+}
+
+/// Toggleable overlay state for the enemy thought debug panel.
+#[derive(Resource)]
+struct EnemyDebugOverlay {
+    enabled: bool,
+}
+
+impl Default for EnemyDebugOverlay {
+    fn default() -> Self {
+        Self { enabled: false }
+    }
+}
+
+/// UI marker for the debug text panel.
+#[derive(Component)]
+struct EnemyDebugOverlayText;
+
+/// Top-level asset loaded from `*.enemy.ron`.
 #[derive(Asset, TypePath, Deserialize, Clone, Debug)]
 struct EnemyAiConfig {
+    /// Nav grid generation settings.
     #[serde(default)]
     nav: EnemyNavigationConfig,
+    /// Enemy archetype templates.
     #[serde(default)]
     archetypes: Vec<EnemyArchetypeConfig>,
+    /// Concrete spawn entries referencing archetype IDs.
     #[serde(default)]
     spawns: Vec<EnemySpawnConfig>,
 }
 
+/// Settings used to generate a Northstar 3D grid from cave noise.
 #[derive(Deserialize, Clone, Debug)]
 struct EnemyNavigationConfig {
+    /// World-space grid minimum corner.
     #[serde(default = "default_world_min")]
     world_min: [i32; 3],
+    /// Grid dimensions in cells.
     #[serde(default = "default_nav_dimensions")]
     dimensions: [u32; 3],
+    /// Northstar chunk width/height.
     #[serde(default = "default_chunk_size")]
     chunk_size: u32,
+    /// Northstar chunk depth.
     #[serde(default = "default_chunk_depth")]
     chunk_depth: u32,
 }
@@ -96,36 +188,54 @@ impl Default for EnemyNavigationConfig {
     }
 }
 
+/// Data-driven enemy archetype. Add more of these in config to create variants.
 #[derive(Deserialize, Clone, Debug)]
 struct EnemyArchetypeConfig {
+    /// Stable archetype identifier used by spawn entries.
     id: String,
+    /// World-space movement speed when following path cells.
     move_speed: f32,
+    /// Max distance where chase utility ramps from 1 -> 0.
     chase_range: f32,
+    /// Distance to player where chasing pauses.
     stopping_distance: f32,
+    /// Time between path requests while chasing.
     repath_interval: f32,
+    /// Pathfinding algorithm.
     #[serde(default)]
     path_mode: EnemyPathMode,
+    /// Debug render color for the enemy sphere.
     #[serde(default = "default_enemy_color")]
     color: [f32; 3],
 }
 
+/// Concrete spawn entry.
 #[derive(Deserialize, Clone, Debug)]
 struct EnemySpawnConfig {
+    /// Archetype id to instantiate.
     archetype: String,
+    /// Initial world-space position.
     position: [f32; 3],
 }
 
+/// Serializable wrapper around Northstar pathfinding modes.
 #[derive(Deserialize, Clone, Copy, Debug, Default)]
 enum EnemyPathMode {
+    /// HPA* refined path (default).
     #[default]
     Refined,
+    /// HPA* coarse path.
     Coarse,
+    /// Full-grid A*.
     AStar,
+    /// Any-angle HPA* (waypoints).
     Waypoints,
+    /// Theta* any-angle shortest-like path.
     ThetaStar,
 }
 
 impl EnemyPathMode {
+    /// Converts config enum to Northstar enum.
     fn into_pathfind_mode(self) -> PathfindMode {
         match self {
             Self::Refined => PathfindMode::Refined,
@@ -136,75 +246,138 @@ impl EnemyPathMode {
         }
     }
 
+    /// Returns whether this mode supports partial paths in Northstar.
     fn supports_partial(self) -> bool {
         matches!(self, Self::AStar | Self::ThetaStar)
     }
 }
 
+/// Enemy marker component.
 #[derive(Component)]
 struct Enemy;
 
+/// Movement tuning carried by each spawned enemy.
 #[derive(Component)]
 struct EnemyMover {
+    /// World units per second.
     move_speed: f32,
 }
 
+/// Utility scorer: how strongly should this enemy chase the player right now.
 #[derive(Clone, Component, Debug, ScorerBuilder)]
 struct TargetInRangeScorer {
+    /// Distance where utility reaches 0.
     chase_range: f32,
 }
 
+/// Chase action: periodically request/re-request Northstar paths toward the player.
 #[derive(Clone, Component, Debug, ActionBuilder)]
 struct ChaseTargetAction {
+    /// Seconds between path requests.
     repath_interval_secs: f32,
+    /// Distance where enemy should stop pushing closer.
     stopping_distance: f32,
+    /// Selected pathfinding mode.
     path_mode: EnemyPathMode,
+    /// Internal timer accumulator.
     repath_elapsed: f32,
 }
 
+/// Idle fallback action.
 #[derive(Clone, Component, Debug, ActionBuilder)]
 struct HoldPositionAction;
 
+/// Default nav grid minimum corner.
 fn default_world_min() -> [i32; 3] {
     [-48, FLOOR_MIN_Y + 1, -48]
 }
 
+/// Default nav grid dimensions, derived from cave floor/ceiling bounds.
 fn default_nav_dimensions() -> [u32; 3] {
     let nav_height = (CEILING_MAX_Y - FLOOR_MIN_Y - 1).max(1) as u32;
     [96, nav_height, 96]
 }
 
+/// Default Northstar chunk width/height.
 fn default_chunk_size() -> u32 {
     8
 }
 
+/// Default Northstar chunk depth.
 fn default_chunk_depth() -> u32 {
     8
 }
 
+/// Default debug enemy color.
 fn default_enemy_color() -> [f32; 3] {
     [0.86, 0.14, 0.18]
 }
 
+/// Requests loading the enemy config asset.
 fn load_enemy_ai_config(mut state: ResMut<EnemyConfigState>, asset_server: Res<AssetServer>) {
     state.handle = asset_server.load(ENEMY_CONFIG_PATH);
 }
 
-fn initialize_enemy_ai_from_config(
+/// Spawns the on-screen debug panel listing enemy "thoughts".
+fn spawn_enemy_debug_overlay_ui(mut commands: Commands) {
+    commands.spawn((
+        EnemyDebugOverlayText,
+        Text::new("Enemy debug pending config load..."),
+        TextFont {
+            font_size: ENEMY_DEBUG_FONT_SIZE,
+            ..default()
+        },
+        TextColor(Color::srgb(0.92, 0.96, 1.0)),
+        Node {
+            position_type: PositionType::Absolute,
+            top: px(8),
+            left: px(8),
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.02, 0.03, 0.05, 0.66)),
+        Visibility::Hidden,
+    ));
+}
+
+/// Handles initial config load and hot reload rebuilds when the asset changes.
+#[allow(clippy::too_many_arguments)]
+fn initialize_or_reload_enemy_ai_from_config(
     mut commands: Commands,
     mut state: ResMut<EnemyConfigState>,
     mut archetypes: ResMut<EnemyArchetypeLibrary>,
     configs: Res<Assets<EnemyAiConfig>>,
+    mut config_events: MessageReader<AssetEvent<EnemyAiConfig>>,
+    existing_enemies: Query<Entity, With<Enemy>>,
+    existing_grids: Query<Entity, With<EnemyNavigationGridMarker>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    if state.initialized {
-        return;
+    let watched_id = state.handle.id();
+    for event in config_events.read() {
+        if event.is_loaded_with_dependencies(watched_id)
+            || event.is_modified(watched_id)
+            || event.is_added(watched_id)
+        {
+            state.needs_reload = true;
+        }
     }
 
     let Some(config) = configs.get(&state.handle) else {
         return;
     };
+
+    if state.initialized && !state.needs_reload {
+        return;
+    }
+
+    if state.initialized {
+        for entity in &existing_enemies {
+            commands.entity(entity).despawn();
+        }
+        for entity in &existing_grids {
+            commands.entity(entity).despawn();
+        }
+    }
 
     let nav_dimensions = UVec3::new(
         config.nav.dimensions[0].max(3),
@@ -223,7 +396,7 @@ fn initialize_enemy_ai_from_config(
         config.nav.chunk_size.max(3),
         config.nav.chunk_depth.max(1),
     );
-    let grid_entity = commands.spawn(grid).id();
+    let grid_entity = commands.spawn((grid, EnemyNavigationGridMarker)).id();
     let nav_grid = EnemyNavigationGrid {
         entity: grid_entity,
         world_min: nav_world_min,
@@ -248,9 +421,11 @@ fn initialize_enemy_ai_from_config(
     }
 
     state.initialized = true;
-    info!("Enemy AI prototype initialized from {ENEMY_CONFIG_PATH}");
+    state.needs_reload = false;
+    info!("Enemy AI initialized from {ENEMY_CONFIG_PATH}");
 }
 
+/// Builds a passable 3D Northstar grid from cave noise.
 fn build_navigation_grid(
     world_min: IVec3,
     dimensions: UVec3,
@@ -291,6 +466,7 @@ fn build_navigation_grid(
     grid
 }
 
+/// Spawns a concrete enemy from one config spawn entry.
 fn spawn_enemy_from_config(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
@@ -336,6 +512,7 @@ fn spawn_enemy_from_config(
     commands.spawn((
         Name::new(format!("Enemy::{}", archetype.id)),
         Enemy,
+        EnemyThoughtState::default(),
         EnemyMover {
             move_speed: archetype.move_speed.max(0.1),
         },
@@ -352,9 +529,10 @@ fn spawn_enemy_from_config(
     ));
 }
 
+/// Computes chase utility based on current enemy-player distance.
 fn target_in_range_scorer_system(
     player: Query<&Transform, With<Player>>,
-    enemies: Query<&Transform, With<Enemy>>,
+    mut enemies: Query<(&Transform, &mut EnemyThoughtState), With<Enemy>>,
     mut scorers: Query<(&Actor, &mut Score, &TargetInRangeScorer)>,
 ) {
     let Ok(player_transform) = player.single() else {
@@ -362,7 +540,7 @@ fn target_in_range_scorer_system(
     };
 
     for (Actor(actor), mut score, scorer) in &mut scorers {
-        let Ok(enemy_transform) = enemies.get(*actor) else {
+        let Ok((enemy_transform, mut thought)) = enemies.get_mut(*actor) else {
             score.set(0.0);
             continue;
         };
@@ -371,14 +549,18 @@ fn target_in_range_scorer_system(
             .translation
             .distance(player_transform.translation);
         let utility = (1.0 - distance / scorer.chase_range.max(0.001)).clamp(0.0, 1.0);
+
+        thought.utility = utility;
+        thought.player_distance = distance;
         score.set(utility);
     }
 }
 
+/// Handles chase action state transitions and emits path requests.
 fn chase_target_action_system(
     time: Res<Time>,
     player: Query<&Transform, With<Player>>,
-    enemies: Query<&Transform, With<Enemy>>,
+    mut enemies: Query<(&Transform, &mut EnemyThoughtState), With<Enemy>>,
     nav_grid: Option<Res<EnemyNavigationGrid>>,
     mut actions: Query<(&Actor, &mut ActionState, &mut ChaseTargetAction, &ActionSpan)>,
     mut commands: Commands,
@@ -402,14 +584,19 @@ fn chase_target_action_system(
 
         match *state {
             ActionState::Requested => {
+                if let Ok((_, mut thought)) = enemies.get_mut(*actor) {
+                    thought.intent = EnemyIntent::Chasing;
+                }
                 chase.repath_elapsed = chase.repath_interval_secs;
                 *state = ActionState::Executing;
             }
             ActionState::Executing => {
-                let Ok(enemy_transform) = enemies.get(*actor) else {
+                let Ok((enemy_transform, mut thought)) = enemies.get_mut(*actor) else {
                     *state = ActionState::Failure;
                     continue;
                 };
+
+                thought.intent = EnemyIntent::Chasing;
 
                 let distance = enemy_transform
                     .translation
@@ -423,7 +610,8 @@ fn chase_target_action_system(
                 chase.repath_elapsed += time.delta_secs();
                 if chase.repath_elapsed >= chase.repath_interval_secs {
                     chase.repath_elapsed = 0.0;
-                    let mut request = Pathfind::new(goal_cell).mode(chase.path_mode.into_pathfind_mode());
+                    let mut request =
+                        Pathfind::new(goal_cell).mode(chase.path_mode.into_pathfind_mode());
                     if chase.path_mode.supports_partial() {
                         request = request.partial();
                     }
@@ -431,6 +619,9 @@ fn chase_target_action_system(
                 }
             }
             ActionState::Cancelled => {
+                if let Ok((_, mut thought)) = enemies.get_mut(*actor) {
+                    thought.intent = EnemyIntent::Idle;
+                }
                 chase.repath_elapsed = 0.0;
                 commands.entity(*actor).remove::<(Pathfind, NextPos)>();
                 *state = ActionState::Failure;
@@ -440,7 +631,9 @@ fn chase_target_action_system(
     }
 }
 
+/// Idle fallback action when chase utility is too low.
 fn hold_position_action_system(
+    mut enemies: Query<&mut EnemyThoughtState, With<Enemy>>,
     mut actions: Query<(&Actor, &mut ActionState, &ActionSpan), With<HoldPositionAction>>,
     mut commands: Commands,
 ) {
@@ -449,6 +642,9 @@ fn hold_position_action_system(
 
         match *state {
             ActionState::Requested => {
+                if let Ok(mut thought) = enemies.get_mut(*actor) {
+                    thought.intent = EnemyIntent::Idle;
+                }
                 commands.entity(*actor).remove::<(Pathfind, NextPos)>();
                 *state = ActionState::Executing;
             }
@@ -460,6 +656,7 @@ fn hold_position_action_system(
     }
 }
 
+/// Converts `NextPos` path output into smooth world-space movement.
 fn move_enemy_agents(
     time: Res<Time>,
     nav_grid: Option<Res<EnemyNavigationGrid>>,
@@ -494,6 +691,7 @@ fn move_enemy_agents(
     }
 }
 
+/// Clears transient pathfinding failures for prototype continuity.
 fn clear_pathfinding_failures(
     failures: Query<Entity, (With<Enemy>, With<PathfindingFailed>)>,
     mut commands: Commands,
@@ -506,6 +704,99 @@ fn clear_pathfinding_failures(
     }
 }
 
+/// Toggles enemy debug overlay and gizmos.
+fn toggle_enemy_debug_overlay(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut overlay: ResMut<EnemyDebugOverlay>,
+) {
+    if keys.just_pressed(KeyCode::F6) {
+        overlay.enabled = !overlay.enabled;
+        info!(
+            "Enemy debug overlay {}",
+            if overlay.enabled { "enabled" } else { "disabled" }
+        );
+    }
+}
+
+/// Updates the text panel that summarizes enemy intent/score/pathing state.
+fn update_enemy_debug_overlay_ui(
+    overlay: Res<EnemyDebugOverlay>,
+    mut ui_text: Single<(&mut Text, &mut Visibility), With<EnemyDebugOverlayText>>,
+    enemies: Query<
+        (
+            Entity,
+            &Name,
+            &EnemyThoughtState,
+            Option<&Pathfind>,
+            Option<&Path>,
+            Option<&NextPos>,
+        ),
+        With<Enemy>,
+    >,
+) {
+    if !overlay.enabled {
+        ui_text.0.clear();
+        *ui_text.1 = Visibility::Hidden;
+        return;
+    }
+
+    *ui_text.1 = Visibility::Visible;
+
+    let mut lines = Vec::new();
+    lines.push(format!("Enemy Debug [F6]  count={}", enemies.iter().len()));
+
+    for (entity, name, thought, pathfind, path, next_pos) in &enemies {
+        let path_len = path.map_or(0, Path::len);
+        let has_request = pathfind.is_some();
+        let next = next_pos
+            .map(|next| format!("{:?}", next.0))
+            .unwrap_or_else(|| "-".to_string());
+
+        lines.push(format!(
+            "{} ({:?}) | intent={} score={:.2} dist={:.1} req={} path_len={} next={}",
+            name.as_str(),
+            entity,
+            thought.intent,
+            thought.utility,
+            thought.player_distance,
+            has_request,
+            path_len,
+            next,
+        ));
+    }
+
+    *ui_text.0 = lines.join("\n").into();
+}
+
+/// Draws a quick visual line from each enemy to the player, color-coded by intent.
+fn draw_enemy_thought_gizmos(
+    overlay: Res<EnemyDebugOverlay>,
+    player: Query<&Transform, With<Player>>,
+    enemies: Query<(&Transform, &EnemyThoughtState), With<Enemy>>,
+    mut gizmos: Gizmos,
+) {
+    if !overlay.enabled {
+        return;
+    }
+
+    let Ok(player_transform) = player.single() else {
+        return;
+    };
+
+    for (enemy_transform, thought) in &enemies {
+        let color = match thought.intent {
+            EnemyIntent::Idle => Color::srgba(0.7, 0.7, 0.7, 0.45),
+            EnemyIntent::Chasing => Color::srgba(0.95, 0.22, 0.2, 0.85),
+        };
+        gizmos.line(
+            enemy_transform.translation,
+            player_transform.translation,
+            color,
+        );
+    }
+}
+
+/// Converts world position to local nav-grid cell coordinates.
 fn world_to_grid_cell(position: Vec3, world_min: IVec3, dimensions: UVec3) -> Option<UVec3> {
     let world_voxel = IVec3::new(
         position.x.floor() as i32,
@@ -527,6 +818,7 @@ fn world_to_grid_cell(position: Vec3, world_min: IVec3, dimensions: UVec3) -> Op
     Some(UVec3::new(local.x as u32, local.y as u32, local.z as u32))
 }
 
+/// Converts local nav-grid cell coordinates to world-space center position.
 fn grid_cell_to_world_center(cell: UVec3, world_min: IVec3) -> Vec3 {
     Vec3::new(
         world_min.x as f32 + cell.x as f32 + ENEMY_CELL_CENTER_OFFSET,
