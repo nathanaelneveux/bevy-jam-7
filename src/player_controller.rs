@@ -109,8 +109,10 @@ fn look_camera(
 
     let (mut yaw, _pitch, _roll) = player_transform.rotation.to_euler(EulerRot::YXZ);
     yaw += look.x;
-    controller.pitch = (controller.pitch + look.y)
-        .clamp(-core::f32::consts::FRAC_PI_2 + 0.01, core::f32::consts::FRAC_PI_2 - 0.01);
+    controller.pitch = (controller.pitch + look.y).clamp(
+        -core::f32::consts::FRAC_PI_2 + 0.01,
+        core::f32::consts::FRAC_PI_2 - 0.01,
+    );
 
     player_transform.rotation = Quat::from_rotation_y(yaw);
     camera_transform.rotation = Quat::from_rotation_x(controller.pitch);

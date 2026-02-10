@@ -2,6 +2,7 @@ mod cave_noise;
 mod cave_world;
 mod chunk_colliders;
 mod enemy_ai;
+mod enemy_navigation;
 mod player_controller;
 
 use avian3d::prelude::*;

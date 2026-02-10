@@ -19,7 +19,11 @@ use big_brain::prelude::*;
 use serde::Deserialize;
 
 use crate::{
-    cave_noise::{CEILING_MAX_Y, CaveNoise, FLOOR_MIN_Y},
+    enemy_navigation::{
+        EnemyNavigationAgent, EnemyNavigationConfig, EnemyNavigationGrid,
+        EnemyNavigationGridMarker, create_navigation_grid, grid_cell_to_world_center,
+        recenter_navigation_grid_around_player, world_to_grid_cell,
+    },
     player_controller::Player,
 };
 
@@ -27,8 +31,6 @@ use crate::{
 const ENEMY_CONFIG_PATH: &str = "enemies/descent.enemy.ron";
 /// Render radius for the debug enemy sphere.
 const ENEMY_RENDER_RADIUS: f32 = 0.35;
-/// Offset from cell min corner to center in world space.
-const ENEMY_CELL_CENTER_OFFSET: f32 = 0.5;
 /// Distance threshold for snapping to the next path cell.
 const ENEMY_POSITION_TOLERANCE: f32 = 0.05;
 /// Font size for the on-screen enemy thought debug panel.
@@ -47,7 +49,10 @@ impl Plugin for EnemyAiPlugin {
         .init_resource::<EnemyConfigState>()
         .init_resource::<EnemyArchetypeLibrary>()
         .init_resource::<EnemyDebugOverlay>()
-        .add_systems(Startup, (load_enemy_ai_config, spawn_enemy_debug_overlay_ui))
+        .add_systems(
+            Startup,
+            (load_enemy_ai_config, spawn_enemy_debug_overlay_ui),
+        )
         .add_systems(
             PreUpdate,
             (
@@ -60,6 +65,7 @@ impl Plugin for EnemyAiPlugin {
             Update,
             (
                 initialize_or_reload_enemy_ai_from_config,
+                recenter_navigation_grid_around_player,
                 toggle_enemy_debug_overlay,
                 update_enemy_debug_overlay_ui,
                 draw_enemy_thought_gizmos,
@@ -84,21 +90,6 @@ struct EnemyConfigState {
 /// Runtime lookup table for archetypes by ID.
 #[derive(Resource, Default)]
 struct EnemyArchetypeLibrary(HashMap<String, EnemyArchetypeConfig>);
-
-/// Defines the single active pathfinding grid used by enemies.
-#[derive(Resource, Clone, Copy)]
-struct EnemyNavigationGrid {
-    /// Entity that owns the Northstar grid component.
-    entity: Entity,
-    /// Inclusive world-space origin (minimum corner) for grid mapping.
-    world_min: IVec3,
-    /// Grid dimensions in cells.
-    dimensions: UVec3,
-}
-
-/// Marker for cleanup/rebuild of the spawned nav grid entity.
-#[derive(Component)]
-struct EnemyNavigationGridMarker;
 
 /// Runtime debug state written by scorers/actions and visualized in HUD/gizmos.
 #[derive(Component, Default)]
@@ -158,34 +149,6 @@ struct EnemyAiConfig {
     /// Concrete spawn entries referencing archetype IDs.
     #[serde(default)]
     spawns: Vec<EnemySpawnConfig>,
-}
-
-/// Settings used to generate a Northstar 3D grid from cave noise.
-#[derive(Deserialize, Clone, Debug)]
-struct EnemyNavigationConfig {
-    /// World-space grid minimum corner.
-    #[serde(default = "default_world_min")]
-    world_min: [i32; 3],
-    /// Grid dimensions in cells.
-    #[serde(default = "default_nav_dimensions")]
-    dimensions: [u32; 3],
-    /// Northstar chunk width/height.
-    #[serde(default = "default_chunk_size")]
-    chunk_size: u32,
-    /// Northstar chunk depth.
-    #[serde(default = "default_chunk_depth")]
-    chunk_depth: u32,
-}
-
-impl Default for EnemyNavigationConfig {
-    fn default() -> Self {
-        Self {
-            world_min: default_world_min(),
-            dimensions: default_nav_dimensions(),
-            chunk_size: default_chunk_size(),
-            chunk_depth: default_chunk_depth(),
-        }
-    }
 }
 
 /// Data-driven enemy archetype. Add more of these in config to create variants.
@@ -287,27 +250,6 @@ struct ChaseTargetAction {
 #[derive(Clone, Component, Debug, ActionBuilder)]
 struct HoldPositionAction;
 
-/// Default nav grid minimum corner.
-fn default_world_min() -> [i32; 3] {
-    [-48, FLOOR_MIN_Y + 1, -48]
-}
-
-/// Default nav grid dimensions, derived from cave floor/ceiling bounds.
-fn default_nav_dimensions() -> [u32; 3] {
-    let nav_height = (CEILING_MAX_Y - FLOOR_MIN_Y - 1).max(1) as u32;
-    [96, nav_height, 96]
-}
-
-/// Default Northstar chunk width/height.
-fn default_chunk_size() -> u32 {
-    8
-}
-
-/// Default Northstar chunk depth.
-fn default_chunk_depth() -> u32 {
-    8
-}
-
 /// Default debug enemy color.
 fn default_enemy_color() -> [f32; 3] {
     [0.86, 0.14, 0.18]
@@ -379,29 +321,7 @@ fn initialize_or_reload_enemy_ai_from_config(
         }
     }
 
-    let nav_dimensions = UVec3::new(
-        config.nav.dimensions[0].max(3),
-        config.nav.dimensions[1].max(1),
-        config.nav.dimensions[2].max(3),
-    );
-    let nav_world_min = IVec3::new(
-        config.nav.world_min[0],
-        config.nav.world_min[1],
-        config.nav.world_min[2],
-    );
-
-    let grid = build_navigation_grid(
-        nav_world_min,
-        nav_dimensions,
-        config.nav.chunk_size.max(3),
-        config.nav.chunk_depth.max(1),
-    );
-    let grid_entity = commands.spawn((grid, EnemyNavigationGridMarker)).id();
-    let nav_grid = EnemyNavigationGrid {
-        entity: grid_entity,
-        world_min: nav_world_min,
-        dimensions: nav_dimensions,
-    };
+    let nav_grid = create_navigation_grid(&mut commands, &config.nav);
     commands.insert_resource(nav_grid);
 
     archetypes.0.clear();
@@ -425,47 +345,6 @@ fn initialize_or_reload_enemy_ai_from_config(
     info!("Enemy AI initialized from {ENEMY_CONFIG_PATH}");
 }
 
-/// Builds a passable 3D Northstar grid from cave noise.
-fn build_navigation_grid(
-    world_min: IVec3,
-    dimensions: UVec3,
-    chunk_size: u32,
-    chunk_depth: u32,
-) -> OrdinalGrid3d {
-    let settings = GridSettingsBuilder::new_3d(dimensions.x, dimensions.y, dimensions.z)
-        .chunk_size(chunk_size)
-        .chunk_depth(chunk_depth)
-        .enable_diagonal_connections()
-        .default_impassable()
-        .build();
-    let mut grid = OrdinalGrid3d::new(&settings);
-    let cave_noise = CaveNoise::new();
-
-    for x in 0..dimensions.x {
-        for z in 0..dimensions.z {
-            let world_x = world_min.x + x as i32;
-            let world_z = world_min.z + z as i32;
-            let (floor_y, ceiling_y) = cave_noise.sample_column(world_x, world_z);
-
-            let local_min = floor_y + 1 - world_min.y;
-            let local_max = ceiling_y - 1 - world_min.y;
-            let start_y = local_min.max(0);
-            let end_y = local_max.min(dimensions.y as i32 - 1);
-
-            if end_y < start_y {
-                continue;
-            }
-
-            for y in start_y as u32..=end_y as u32 {
-                grid.set_nav(UVec3::new(x, y, z), Nav::Passable(1));
-            }
-        }
-    }
-
-    grid.build();
-    grid
-}
-
 /// Spawns a concrete enemy from one config spawn entry.
 fn spawn_enemy_from_config(
     commands: &mut Commands,
@@ -484,7 +363,8 @@ fn spawn_enemy_from_config(
     };
 
     let world_position = Vec3::new(spawn.position[0], spawn.position[1], spawn.position[2]);
-    let Some(agent_pos) = world_to_grid_cell(world_position, nav_grid.world_min, nav_grid.dimensions)
+    let Some(agent_pos) =
+        world_to_grid_cell(world_position, nav_grid.world_min, nav_grid.dimensions)
     else {
         warn!(
             "Enemy spawn {:?} for '{}' is outside navigation bounds",
@@ -512,6 +392,7 @@ fn spawn_enemy_from_config(
     commands.spawn((
         Name::new(format!("Enemy::{}", archetype.id)),
         Enemy,
+        EnemyNavigationAgent,
         EnemyThoughtState::default(),
         EnemyMover {
             move_speed: archetype.move_speed.max(0.1),
@@ -562,7 +443,12 @@ fn chase_target_action_system(
     player: Query<&Transform, With<Player>>,
     mut enemies: Query<(&Transform, &mut EnemyThoughtState), With<Enemy>>,
     nav_grid: Option<Res<EnemyNavigationGrid>>,
-    mut actions: Query<(&Actor, &mut ActionState, &mut ChaseTargetAction, &ActionSpan)>,
+    mut actions: Query<(
+        &Actor,
+        &mut ActionState,
+        &mut ChaseTargetAction,
+        &ActionSpan,
+    )>,
     mut commands: Commands,
 ) {
     let Some(nav_grid) = nav_grid else {
@@ -713,7 +599,11 @@ fn toggle_enemy_debug_overlay(
         overlay.enabled = !overlay.enabled;
         info!(
             "Enemy debug overlay {}",
-            if overlay.enabled { "enabled" } else { "disabled" }
+            if overlay.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            }
         );
     }
 }
@@ -794,35 +684,4 @@ fn draw_enemy_thought_gizmos(
             color,
         );
     }
-}
-
-/// Converts world position to local nav-grid cell coordinates.
-fn world_to_grid_cell(position: Vec3, world_min: IVec3, dimensions: UVec3) -> Option<UVec3> {
-    let world_voxel = IVec3::new(
-        position.x.floor() as i32,
-        position.y.floor() as i32,
-        position.z.floor() as i32,
-    );
-    let local = world_voxel - world_min;
-
-    if local.x < 0
-        || local.y < 0
-        || local.z < 0
-        || local.x as u32 >= dimensions.x
-        || local.y as u32 >= dimensions.y
-        || local.z as u32 >= dimensions.z
-    {
-        return None;
-    }
-
-    Some(UVec3::new(local.x as u32, local.y as u32, local.z as u32))
-}
-
-/// Converts local nav-grid cell coordinates to world-space center position.
-fn grid_cell_to_world_center(cell: UVec3, world_min: IVec3) -> Vec3 {
-    Vec3::new(
-        world_min.x as f32 + cell.x as f32 + ENEMY_CELL_CENTER_OFFSET,
-        world_min.y as f32 + cell.y as f32 + ENEMY_CELL_CENTER_OFFSET,
-        world_min.z as f32 + cell.z as f32 + ENEMY_CELL_CENTER_OFFSET,
-    )
 }

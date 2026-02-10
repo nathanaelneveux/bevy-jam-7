@@ -62,13 +62,14 @@ fn sync_chunk_colliders(
                 continue;
             }
 
-            let collider =
-                Collider::voxels(Vec3::splat(CHUNK_COLLIDER_VOXEL_SIZE), &voxel_coords);
+            let collider = Collider::voxels(Vec3::splat(CHUNK_COLLIDER_VOXEL_SIZE), &voxel_coords);
             chunk_collider_cache.0.insert(voxels_hash, collider.clone());
             collider
         };
 
-        commands.entity(entity).insert((RigidBody::Static, collider));
+        commands
+            .entity(entity)
+            .insert((RigidBody::Static, collider));
     }
 }
 
