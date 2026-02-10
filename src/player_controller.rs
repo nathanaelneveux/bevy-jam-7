@@ -28,7 +28,7 @@ impl Plugin for PlayerControllerPlugin {
 }
 
 #[derive(Component)]
-struct Player;
+pub(crate) struct Player;
 
 #[derive(Component)]
 struct PlayerCamera;
