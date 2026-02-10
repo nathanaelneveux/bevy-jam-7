@@ -6,12 +6,17 @@
 //! - world/grid coordinate conversion
 //! - dynamic recentering for infinite worlds
 
+use std::collections::HashMap;
+
 use bevy::prelude::*;
+use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
 use bevy_northstar::prelude::*;
+use bevy_voxel_world::{custom_meshing::CHUNK_SIZE_I, prelude::*};
 use serde::Deserialize;
 
 use crate::{
     cave_noise::{CEILING_MAX_Y, CaveNoise, FLOOR_MIN_Y},
+    cave_world::CaveWorld,
     player_controller::Player,
 };
 
@@ -77,6 +82,26 @@ pub(crate) struct EnemyNavigationGridMarker;
 #[derive(Component)]
 pub(crate) struct EnemyNavigationAgent;
 
+/// Pending async navigation-grid rebuild state.
+#[derive(Resource, Default)]
+pub(crate) struct EnemyNavigationRecenterState {
+    task: Option<Task<PendingNavigationGrid>>,
+}
+
+struct PendingNavigationGrid {
+    world_min: IVec3,
+    grid: OrdinalGrid3d,
+}
+
+/// Tracks the last passable world cells applied for each loaded chunk.
+#[derive(Resource, Default)]
+pub(crate) struct EnemyChunkNavCache(pub(crate) HashMap<IVec3, Vec<IVec3>>);
+
+/// Cancels any in-flight async navigation rebuild.
+pub(crate) fn clear_pending_navigation_recenter(recenter_state: &mut EnemyNavigationRecenterState) {
+    recenter_state.task = None;
+}
+
 /// Builds and spawns the active navigation grid entity from config.
 pub(crate) fn create_navigation_grid(
     commands: &mut Commands,
@@ -110,16 +135,18 @@ pub(crate) fn create_navigation_grid(
     }
 }
 
-/// Rebuilds the navigation grid around the player when they approach X/Z bounds.
-pub(crate) fn recenter_navigation_grid_around_player(
-    mut commands: Commands,
+/// Queues an async navigation rebuild when the player nears the current X/Z bounds.
+pub(crate) fn request_navigation_grid_recenter(
     player: Query<&Transform, With<Player>>,
-    nav_grid: Option<ResMut<EnemyNavigationGrid>>,
-    mut agents: Query<(Entity, &Transform, &mut AgentPos), With<EnemyNavigationAgent>>,
+    nav_grid: Option<Res<EnemyNavigationGrid>>,
+    mut recenter_state: ResMut<EnemyNavigationRecenterState>,
 ) {
-    let Some(mut nav_grid) = nav_grid else {
+    let Some(nav_grid) = nav_grid else {
         return;
     };
+    if recenter_state.task.is_some() {
+        return;
+    }
     let Ok(player_transform) = player.single() else {
         return;
     };
@@ -148,32 +175,190 @@ pub(crate) fn recenter_navigation_grid_around_player(
         return;
     }
 
-    let new_grid = build_navigation_grid(
-        new_world_min,
-        nav_grid.dimensions,
-        nav_grid.chunk_size,
-        nav_grid.chunk_depth,
-    );
-    let old_grid_entity = nav_grid.entity;
-    let new_grid_entity = commands.spawn((new_grid, EnemyNavigationGridMarker)).id();
+    let dimensions = nav_grid.dimensions;
+    let chunk_size = nav_grid.chunk_size;
+    let chunk_depth = nav_grid.chunk_depth;
+    let task_pool = AsyncComputeTaskPool::get();
+    recenter_state.task = Some(task_pool.spawn(async move {
+        let grid = build_navigation_grid(new_world_min, dimensions, chunk_size, chunk_depth);
+        PendingNavigationGrid {
+            world_min: new_world_min,
+            grid,
+        }
+    }));
+}
 
-    nav_grid.entity = new_grid_entity;
-    nav_grid.world_min = new_world_min;
+/// Applies a completed async navigation rebuild to the active grid.
+pub(crate) fn apply_ready_navigation_grid_recenter(
+    mut nav_grid: Option<ResMut<EnemyNavigationGrid>>,
+    mut nav_grids: Query<&mut OrdinalGrid3d, With<EnemyNavigationGridMarker>>,
+    mut agents: Query<(Entity, &Transform, &mut AgentPos), With<EnemyNavigationAgent>>,
+    mut recenter_state: ResMut<EnemyNavigationRecenterState>,
+    mut commands: Commands,
+) {
+    let Some(nav_grid) = nav_grid.as_mut() else {
+        recenter_state.task = None;
+        return;
+    };
 
-    commands.entity(old_grid_entity).despawn();
+    let Some(mut task) = recenter_state.task.take() else {
+        return;
+    };
 
+    let Some(pending) = future::block_on(future::poll_once(&mut task)) else {
+        recenter_state.task = Some(task);
+        return;
+    };
+
+    let Ok(mut grid_component) = nav_grids.get_mut(nav_grid.entity) else {
+        return;
+    };
+    *grid_component = pending.grid;
+    nav_grid.world_min = pending.world_min;
+
+    let world_min = nav_grid.world_min;
+    let dimensions = nav_grid.dimensions;
     for (entity, transform, mut agent_pos) in &mut agents {
-        commands.entity(entity).insert(AgentOfGrid(new_grid_entity));
-        if let Some(new_cell) =
-            world_to_grid_cell(transform.translation, new_world_min, nav_grid.dimensions)
-        {
+        if let Some(new_cell) = world_to_grid_cell(transform.translation, world_min, dimensions) {
             agent_pos.0 = new_cell;
         }
 
         commands
             .entity(entity)
-            .remove::<(Pathfind, Path, NextPos, PathfindingFailed)>();
+            .try_remove::<(Pathfind, Path, NextPos, PathfindingFailed)>();
     }
+}
+
+/// Applies passable nav cells for chunks when they spawn or remesh.
+pub(crate) fn apply_chunk_nav_on_spawn_or_remesh(
+    nav_grid: Option<Res<EnemyNavigationGrid>>,
+    mut nav_grids: Query<&mut OrdinalGrid3d, With<EnemyNavigationGridMarker>>,
+    voxel_world: VoxelWorld<CaveWorld>,
+    mut cache: ResMut<EnemyChunkNavCache>,
+    mut spawn_events: MessageReader<ChunkWillSpawn<CaveWorld>>,
+    mut remesh_events: MessageReader<ChunkWillRemesh<CaveWorld>>,
+) {
+    let Some(nav_grid) = nav_grid else {
+        return;
+    };
+    let Ok(mut grid) = nav_grids.get_mut(nav_grid.entity) else {
+        return;
+    };
+
+    let mut changed = false;
+    for event in spawn_events.read() {
+        changed |= refresh_chunk_nav_cells(
+            &mut grid,
+            &nav_grid,
+            &voxel_world,
+            &mut cache,
+            event.chunk_key,
+        );
+    }
+    for event in remesh_events.read() {
+        changed |= refresh_chunk_nav_cells(
+            &mut grid,
+            &nav_grid,
+            &voxel_world,
+            &mut cache,
+            event.chunk_key,
+        );
+    }
+
+    if changed {
+        grid.build();
+    }
+}
+
+/// Removes passable nav cells for chunks when they despawn.
+pub(crate) fn clear_chunk_nav_on_despawn(
+    nav_grid: Option<Res<EnemyNavigationGrid>>,
+    mut nav_grids: Query<&mut OrdinalGrid3d, With<EnemyNavigationGridMarker>>,
+    mut cache: ResMut<EnemyChunkNavCache>,
+    mut despawn_events: MessageReader<ChunkWillDespawn<CaveWorld>>,
+) {
+    let Some(nav_grid) = nav_grid else {
+        return;
+    };
+    let Ok(mut grid) = nav_grids.get_mut(nav_grid.entity) else {
+        return;
+    };
+
+    let mut changed = false;
+    for event in despawn_events.read() {
+        if let Some(previous_passable) = cache.0.remove(&event.chunk_key) {
+            for world_cell in previous_passable {
+                if let Some(local) = world_to_grid_cell(
+                    world_cell.as_vec3(),
+                    nav_grid.world_min,
+                    nav_grid.dimensions,
+                ) {
+                    grid.set_nav(local, Nav::Impassable);
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    if changed {
+        grid.build();
+    }
+}
+
+fn refresh_chunk_nav_cells(
+    grid: &mut OrdinalGrid3d,
+    nav_grid: &EnemyNavigationGrid,
+    voxel_world: &VoxelWorld<CaveWorld>,
+    cache: &mut EnemyChunkNavCache,
+    chunk_key: IVec3,
+) -> bool {
+    let Some(chunk_data) = voxel_world.get_chunk_data(chunk_key) else {
+        return false;
+    };
+
+    let mut changed = false;
+
+    if let Some(previous_passable) = cache.0.remove(&chunk_key) {
+        for world_cell in previous_passable {
+            if let Some(local) = world_to_grid_cell(
+                world_cell.as_vec3(),
+                nav_grid.world_min,
+                nav_grid.dimensions,
+            ) {
+                grid.set_nav(local, Nav::Impassable);
+                changed = true;
+            }
+        }
+    }
+
+    let chunk_origin = chunk_key * CHUNK_SIZE_I;
+    let mut passable_world_cells = Vec::new();
+    for x in 0..CHUNK_SIZE_I {
+        for y in 0..CHUNK_SIZE_I {
+            for z in 0..CHUNK_SIZE_I {
+                let world_cell = chunk_origin + IVec3::new(x, y, z);
+                let Some(voxel) = chunk_data.get_voxel_at_world_position(world_cell) else {
+                    continue;
+                };
+                if !matches!(voxel, WorldVoxel::Air) {
+                    continue;
+                }
+
+                passable_world_cells.push(world_cell);
+                if let Some(local) = world_to_grid_cell(
+                    world_cell.as_vec3(),
+                    nav_grid.world_min,
+                    nav_grid.dimensions,
+                ) {
+                    grid.set_nav(local, Nav::Passable(1));
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    cache.0.insert(chunk_key, passable_world_cells);
+    changed
 }
 
 /// Converts world position to local nav-grid cell coordinates.

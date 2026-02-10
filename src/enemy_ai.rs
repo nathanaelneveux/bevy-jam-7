@@ -20,9 +20,11 @@ use serde::Deserialize;
 
 use crate::{
     enemy_navigation::{
-        EnemyNavigationAgent, EnemyNavigationConfig, EnemyNavigationGrid,
-        EnemyNavigationGridMarker, create_navigation_grid, grid_cell_to_world_center,
-        recenter_navigation_grid_around_player, world_to_grid_cell,
+        EnemyChunkNavCache, EnemyNavigationAgent, EnemyNavigationConfig, EnemyNavigationGrid,
+        EnemyNavigationGridMarker, EnemyNavigationRecenterState,
+        apply_chunk_nav_on_spawn_or_remesh, apply_ready_navigation_grid_recenter,
+        clear_chunk_nav_on_despawn, clear_pending_navigation_recenter, create_navigation_grid,
+        grid_cell_to_world_center, request_navigation_grid_recenter, world_to_grid_cell,
     },
     player_controller::Player,
 };
@@ -48,6 +50,8 @@ impl Plugin for EnemyAiPlugin {
         ))
         .init_resource::<EnemyConfigState>()
         .init_resource::<EnemyArchetypeLibrary>()
+        .init_resource::<EnemyChunkNavCache>()
+        .init_resource::<EnemyNavigationRecenterState>()
         .init_resource::<EnemyDebugOverlay>()
         .add_systems(
             Startup,
@@ -65,13 +69,19 @@ impl Plugin for EnemyAiPlugin {
             Update,
             (
                 initialize_or_reload_enemy_ai_from_config,
-                recenter_navigation_grid_around_player,
+                ApplyDeferred,
+                request_navigation_grid_recenter,
+                apply_ready_navigation_grid_recenter,
+                apply_chunk_nav_on_spawn_or_remesh,
+                clear_chunk_nav_on_despawn,
+                ApplyDeferred,
                 toggle_enemy_debug_overlay,
                 update_enemy_debug_overlay_ui,
                 draw_enemy_thought_gizmos,
                 move_enemy_agents.after(PathingSet),
                 clear_pathfinding_failures,
-            ),
+            )
+                .chain(),
         );
     }
 }
@@ -287,6 +297,8 @@ fn initialize_or_reload_enemy_ai_from_config(
     mut commands: Commands,
     mut state: ResMut<EnemyConfigState>,
     mut archetypes: ResMut<EnemyArchetypeLibrary>,
+    mut chunk_nav_cache: ResMut<EnemyChunkNavCache>,
+    mut recenter_state: ResMut<EnemyNavigationRecenterState>,
     configs: Res<Assets<EnemyAiConfig>>,
     mut config_events: MessageReader<AssetEvent<EnemyAiConfig>>,
     existing_enemies: Query<Entity, With<Enemy>>,
@@ -313,11 +325,13 @@ fn initialize_or_reload_enemy_ai_from_config(
     }
 
     if state.initialized {
+        chunk_nav_cache.0.clear();
+        clear_pending_navigation_recenter(&mut recenter_state);
         for entity in &existing_enemies {
-            commands.entity(entity).despawn();
+            commands.entity(entity).try_despawn();
         }
         for entity in &existing_grids {
-            commands.entity(entity).despawn();
+            commands.entity(entity).try_despawn();
         }
     }
 
