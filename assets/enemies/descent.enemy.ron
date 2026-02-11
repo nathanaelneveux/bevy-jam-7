@@ -1,10 +1,4 @@
 (
-  nav: (
-    world_min: (-48, -15, -48),
-    dimensions: (96, 56, 96),
-    chunk_size: 8,
-    chunk_depth: 8,
-  ),
   archetypes: [
     (
       id: "scout",

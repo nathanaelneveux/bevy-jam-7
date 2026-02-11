@@ -2,7 +2,7 @@ mod cave_noise;
 mod cave_world;
 mod chunk_colliders;
 mod enemy_ai;
-mod enemy_navigation;
+mod mob_navigation;
 mod player_controller;
 
 use avian3d::prelude::*;
@@ -15,6 +15,7 @@ use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
 use cave_world::CaveWorldPlugin;
 use chunk_colliders::ChunkColliderPlugin;
 use enemy_ai::EnemyAiPlugin;
+use mob_navigation::MobNavigationPlugin;
 use player_controller::PlayerControllerPlugin;
 
 #[derive(Resource, Default)]
@@ -28,6 +29,11 @@ fn main() {
             meta_check: AssetMetaCheck::Never,
             ..default()
         }))
+        .configure_sets(
+            Update,
+            enemy_ai::EnemyAiUpdateSet::ConfigReload
+                .before(mob_navigation::MobNavigationUpdateSet::ConfigReload),
+        )
         .init_resource::<InspectorMode>()
         .add_plugins(EnhancedInputPlugin)
         .add_plugins(PhysicsPlugins::default())
@@ -36,6 +42,7 @@ fn main() {
         .add_plugins(CaveWorldPlugin)
         .add_plugins(PlayerControllerPlugin)
         .add_plugins(ChunkColliderPlugin)
+        .add_plugins(MobNavigationPlugin)
         .add_plugins(EnemyAiPlugin)
         .add_systems(Update, toggle_inspector_mode)
         .add_systems(Startup, setup)

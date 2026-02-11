@@ -19,12 +19,8 @@ use big_brain::prelude::*;
 use serde::Deserialize;
 
 use crate::{
-    enemy_navigation::{
-        EnemyChunkNavCache, EnemyNavigationAgent, EnemyNavigationConfig, EnemyNavigationGrid,
-        EnemyNavigationGridMarker, EnemyNavigationRecenterState,
-        apply_chunk_nav_on_spawn_or_remesh, apply_ready_navigation_grid_recenter,
-        clear_chunk_nav_on_despawn, clear_pending_navigation_recenter, create_navigation_grid,
-        grid_cell_to_world_center, request_navigation_grid_recenter, world_to_grid_cell,
+    mob_navigation::{
+        MobNavigationAgent, MobNavigationGrid, grid_cell_to_world_center, world_to_grid_cell,
     },
     player_controller::Player,
 };
@@ -41,17 +37,37 @@ const ENEMY_DEBUG_FONT_SIZE: f32 = 14.0;
 /// Plugin that wires config loading, utility AI, pathfinding, and debug UI.
 pub struct EnemyAiPlugin;
 
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum EnemyAiUpdateSet {
+    ConfigReload,
+    DebugToggle,
+    DebugUi,
+    DebugGizmos,
+    Movement,
+    Cleanup,
+}
+
 impl Plugin for EnemyAiPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins((
             RonAssetPlugin::<EnemyAiConfig>::new(&["enemy.ron"]),
             BigBrainPlugin::new(PreUpdate),
-            NorthstarPlugin::<OrdinalNeighborhood3d>::default(),
         ))
+        .configure_sets(
+            Update,
+            (
+                EnemyAiUpdateSet::ConfigReload,
+                EnemyAiUpdateSet::DebugToggle.after(EnemyAiUpdateSet::ConfigReload),
+                EnemyAiUpdateSet::DebugUi.after(EnemyAiUpdateSet::DebugToggle),
+                EnemyAiUpdateSet::DebugGizmos.after(EnemyAiUpdateSet::DebugUi),
+                EnemyAiUpdateSet::Movement
+                    .after(EnemyAiUpdateSet::ConfigReload)
+                    .after(PathingSet),
+                EnemyAiUpdateSet::Cleanup.after(EnemyAiUpdateSet::Movement),
+            ),
+        )
         .init_resource::<EnemyConfigState>()
         .init_resource::<EnemyArchetypeLibrary>()
-        .init_resource::<EnemyChunkNavCache>()
-        .init_resource::<EnemyNavigationRecenterState>()
         .init_resource::<EnemyDebugOverlay>()
         .add_systems(
             Startup,
@@ -67,21 +83,26 @@ impl Plugin for EnemyAiPlugin {
         )
         .add_systems(
             Update,
-            (
-                initialize_or_reload_enemy_ai_from_config,
-                ApplyDeferred,
-                request_navigation_grid_recenter,
-                apply_ready_navigation_grid_recenter,
-                apply_chunk_nav_on_spawn_or_remesh,
-                clear_chunk_nav_on_despawn,
-                ApplyDeferred,
-                toggle_enemy_debug_overlay,
-                update_enemy_debug_overlay_ui,
-                draw_enemy_thought_gizmos,
-                move_enemy_agents.after(PathingSet),
-                clear_pathfinding_failures,
-            )
-                .chain(),
+            (initialize_or_reload_enemy_ai_from_config, ApplyDeferred)
+                .chain()
+                .in_set(EnemyAiUpdateSet::ConfigReload),
+        )
+        .add_systems(
+            Update,
+            toggle_enemy_debug_overlay.in_set(EnemyAiUpdateSet::DebugToggle),
+        )
+        .add_systems(
+            Update,
+            update_enemy_debug_overlay_ui.in_set(EnemyAiUpdateSet::DebugUi),
+        )
+        .add_systems(
+            Update,
+            draw_enemy_thought_gizmos.in_set(EnemyAiUpdateSet::DebugGizmos),
+        )
+        .add_systems(Update, move_enemy_agents.in_set(EnemyAiUpdateSet::Movement))
+        .add_systems(
+            Update,
+            clear_pathfinding_failures.in_set(EnemyAiUpdateSet::Cleanup),
         );
     }
 }
@@ -132,15 +153,9 @@ impl Display for EnemyIntent {
 }
 
 /// Toggleable overlay state for the enemy thought debug panel.
-#[derive(Resource)]
+#[derive(Resource, Default)]
 struct EnemyDebugOverlay {
     enabled: bool,
-}
-
-impl Default for EnemyDebugOverlay {
-    fn default() -> Self {
-        Self { enabled: false }
-    }
 }
 
 /// UI marker for the debug text panel.
@@ -150,9 +165,6 @@ struct EnemyDebugOverlayText;
 /// Top-level asset loaded from `*.enemy.ron`.
 #[derive(Asset, TypePath, Deserialize, Clone, Debug)]
 struct EnemyAiConfig {
-    /// Nav grid generation settings.
-    #[serde(default)]
-    nav: EnemyNavigationConfig,
     /// Enemy archetype templates.
     #[serde(default)]
     archetypes: Vec<EnemyArchetypeConfig>,
@@ -297,46 +309,34 @@ fn initialize_or_reload_enemy_ai_from_config(
     mut commands: Commands,
     mut state: ResMut<EnemyConfigState>,
     mut archetypes: ResMut<EnemyArchetypeLibrary>,
-    mut chunk_nav_cache: ResMut<EnemyChunkNavCache>,
-    mut recenter_state: ResMut<EnemyNavigationRecenterState>,
+    nav_grid: Option<Res<MobNavigationGrid>>,
     configs: Res<Assets<EnemyAiConfig>>,
     mut config_events: MessageReader<AssetEvent<EnemyAiConfig>>,
     existing_enemies: Query<Entity, With<Enemy>>,
-    existing_grids: Query<Entity, With<EnemyNavigationGridMarker>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let watched_id = state.handle.id();
-    for event in config_events.read() {
-        if event.is_loaded_with_dependencies(watched_id)
-            || event.is_modified(watched_id)
-            || event.is_added(watched_id)
-        {
-            state.needs_reload = true;
+    if state.initialized {
+        for event in config_events.read() {
+            if event.is_modified(watched_id) {
+                state.needs_reload = true;
+            }
         }
     }
 
     let Some(config) = configs.get(&state.handle) else {
         return;
     };
-
     if state.initialized && !state.needs_reload {
         return;
     }
 
     if state.initialized {
-        chunk_nav_cache.0.clear();
-        clear_pending_navigation_recenter(&mut recenter_state);
         for entity in &existing_enemies {
             commands.entity(entity).try_despawn();
         }
-        for entity in &existing_grids {
-            commands.entity(entity).try_despawn();
-        }
     }
-
-    let nav_grid = create_navigation_grid(&mut commands, &config.nav);
-    commands.insert_resource(nav_grid);
 
     archetypes.0.clear();
     for archetype in &config.archetypes {
@@ -349,7 +349,7 @@ fn initialize_or_reload_enemy_ai_from_config(
             &mut meshes,
             &mut materials,
             &archetypes.0,
-            nav_grid,
+            nav_grid.as_deref().copied(),
             spawn,
         );
     }
@@ -365,7 +365,7 @@ fn spawn_enemy_from_config(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
     archetypes: &HashMap<String, EnemyArchetypeConfig>,
-    nav_grid: EnemyNavigationGrid,
+    nav_grid: Option<MobNavigationGrid>,
     spawn: &EnemySpawnConfig,
 ) {
     let Some(archetype) = archetypes.get(&spawn.archetype) else {
@@ -377,15 +377,6 @@ fn spawn_enemy_from_config(
     };
 
     let world_position = Vec3::new(spawn.position[0], spawn.position[1], spawn.position[2]);
-    let Some(agent_pos) =
-        world_to_grid_cell(world_position, nav_grid.world_min, nav_grid.dimensions)
-    else {
-        warn!(
-            "Enemy spawn {:?} for '{}' is outside navigation bounds",
-            spawn.position, spawn.archetype
-        );
-        return;
-    };
 
     let thinker = Thinker::build()
         .label(format!("{}Thinker", archetype.id))
@@ -403,10 +394,10 @@ fn spawn_enemy_from_config(
         )
         .otherwise(HoldPositionAction);
 
-    commands.spawn((
+    let mut entity_commands = commands.spawn((
         Name::new(format!("Enemy::{}", archetype.id)),
         Enemy,
-        EnemyNavigationAgent,
+        MobNavigationAgent,
         EnemyThoughtState::default(),
         EnemyMover {
             move_speed: archetype.move_speed.max(0.1),
@@ -418,10 +409,26 @@ fn spawn_enemy_from_config(
             archetype.color[1],
             archetype.color[2],
         ))),
-        AgentPos(agent_pos),
-        AgentOfGrid(nav_grid.entity),
         thinker,
     ));
+
+    if let Some(nav_grid) = nav_grid {
+        if let Some(agent_pos) =
+            world_to_grid_cell(world_position, nav_grid.world_min, nav_grid.dimensions)
+        {
+            entity_commands.insert((AgentPos(agent_pos), AgentOfGrid(nav_grid.entity)));
+        } else {
+            warn!(
+                "Enemy spawn {:?} for '{}' is outside navigation bounds; spawning without nav binding",
+                spawn.position, spawn.archetype
+            );
+        }
+    } else {
+        info!(
+            "Enemy spawn {:?} for '{}' created before navigation grid was ready",
+            spawn.position, spawn.archetype
+        );
+    }
 }
 
 /// Computes chase utility based on current enemy-player distance.
@@ -456,7 +463,8 @@ fn chase_target_action_system(
     time: Res<Time>,
     player: Query<&Transform, With<Player>>,
     mut enemies: Query<(&Transform, &mut EnemyThoughtState), With<Enemy>>,
-    nav_grid: Option<Res<EnemyNavigationGrid>>,
+    nav_grid: Option<Res<MobNavigationGrid>>,
+    nav_bound_agents: Query<(), (With<AgentPos>, With<AgentOfGrid>)>,
     mut actions: Query<(
         &Actor,
         &mut ActionState,
@@ -481,6 +489,10 @@ fn chase_target_action_system(
 
     for (Actor(actor), mut state, mut chase, span) in &mut actions {
         let _guard = span.span().enter();
+
+        if !nav_bound_agents.contains(*actor) {
+            continue;
+        }
 
         match *state {
             ActionState::Requested => {
@@ -559,7 +571,7 @@ fn hold_position_action_system(
 /// Converts `NextPos` path output into smooth world-space movement.
 fn move_enemy_agents(
     time: Res<Time>,
-    nav_grid: Option<Res<EnemyNavigationGrid>>,
+    nav_grid: Option<Res<MobNavigationGrid>>,
     mut query: Query<(Entity, &EnemyMover, &mut Transform, &mut AgentPos, &NextPos), With<Enemy>>,
     mut commands: Commands,
 ) {
