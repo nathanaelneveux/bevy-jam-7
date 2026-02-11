@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use avian3d::prelude::*;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
@@ -6,6 +8,7 @@ use bevy_voxel_world::prelude::{Chunk, VoxelWorld, WorldVoxel};
 use crate::cave_world::CaveWorld;
 
 const CHUNK_COLLIDER_VOXEL_SIZE: f32 = 1.0;
+const CHUNK_COLLIDER_CACHE_MAX_ENTRIES: usize = 512;
 
 pub struct ChunkColliderPlugin;
 
@@ -17,7 +20,36 @@ impl Plugin for ChunkColliderPlugin {
 }
 
 #[derive(Resource, Default)]
-struct ChunkColliderCache(HashMap<u64, Collider>);
+struct ChunkColliderCache {
+    colliders: HashMap<u64, Collider>,
+    insertion_order: VecDeque<u64>,
+}
+
+impl ChunkColliderCache {
+    fn get(&self, key: u64) -> Option<Collider> {
+        self.colliders.get(&key).cloned()
+    }
+
+    fn insert(&mut self, key: u64, collider: Collider) {
+        self.insert_with_capacity(key, collider, CHUNK_COLLIDER_CACHE_MAX_ENTRIES);
+    }
+
+    fn insert_with_capacity(&mut self, key: u64, collider: Collider, capacity: usize) {
+        if capacity == 0 || self.colliders.contains_key(&key) {
+            return;
+        }
+
+        while self.insertion_order.len() >= capacity {
+            let Some(oldest) = self.insertion_order.pop_front() else {
+                break;
+            };
+            self.colliders.remove(&oldest);
+        }
+
+        self.insertion_order.push_back(key);
+        self.colliders.insert(key, collider);
+    }
+}
 
 fn sync_chunk_colliders(
     mut commands: Commands,
@@ -41,8 +73,8 @@ fn sync_chunk_colliders(
         }
 
         let voxels_hash = chunk_data.voxels_hash();
-        let collider = if let Some(cached) = chunk_collider_cache.0.get(&voxels_hash) {
-            cached.clone()
+        let collider = if let Some(cached) = chunk_collider_cache.get(voxels_hash) {
+            cached
         } else {
             let shape = chunk_data.data_shape();
             let [sx, sy, sz] = shape.to_array();
@@ -63,7 +95,7 @@ fn sync_chunk_colliders(
             }
 
             let collider = Collider::voxels(Vec3::splat(CHUNK_COLLIDER_VOXEL_SIZE), &voxel_coords);
-            chunk_collider_cache.0.insert(voxels_hash, collider.clone());
+            chunk_collider_cache.insert(voxels_hash, collider.clone());
             collider
         };
 
@@ -125,5 +157,36 @@ fn clear_chunk_colliders(
 ) {
     for entity in &chunks_without_mesh {
         commands.entity(entity).remove::<(Collider, RigidBody)>();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_evicts_oldest_when_capacity_is_reached() {
+        let mut cache = ChunkColliderCache::default();
+        let collider = Collider::cuboid(1.0, 1.0, 1.0);
+
+        cache.insert_with_capacity(1, collider.clone(), 2);
+        cache.insert_with_capacity(2, collider.clone(), 2);
+        cache.insert_with_capacity(3, collider, 2);
+
+        assert!(cache.get(1).is_none());
+        assert!(cache.get(2).is_some());
+        assert!(cache.get(3).is_some());
+    }
+
+    #[test]
+    fn cache_ignores_duplicate_key_inserts() {
+        let mut cache = ChunkColliderCache::default();
+        let collider = Collider::cuboid(1.0, 1.0, 1.0);
+
+        cache.insert_with_capacity(1, collider.clone(), 2);
+        cache.insert_with_capacity(1, collider, 2);
+
+        assert_eq!(cache.colliders.len(), 1);
+        assert_eq!(cache.insertion_order.len(), 1);
     }
 }
