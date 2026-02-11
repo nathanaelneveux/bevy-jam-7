@@ -11,10 +11,10 @@ bevy_asset_loader = "0.25.0"
 bevy_common_assets = { version = "0.15.0", features = ["ron"] }
 bevy_enhanced_input = "0.23.2"
 bevy_hanabi = "0.18.0"
-bevy_northstar = "0.6.1"
 big-brain = { git = "https://github.com/nathanaelneveux/big-brain.git", branch = "main" }
 bevy_voxel_world = { git = "https://github.com/nathanaelneveux/bevy_voxel_world", branch = "wasm-support" }
 binary-greedy-meshing = "0.5.2"
+vleue_navigator = { version = "0.15.0", features = ["avian3d"] }
 # Set max log levels. This helps avoid unwanted low-severity log spam, which can affect performance.
 log = { version = "0.4", features = [
     "max_level_debug",
@@ -26,6 +26,9 @@ tracing = { version = "0.1", features = [
     "max_level_debug",
     "release_max_level_warn",
 ] }
+
+[patch.crates-io]
+avian3d = { git = "https://github.com/Jondolf/avian", rev = "53443b162e7cc4ad7b5133575d9e416e9f8000ed" }
 
 # Idiomatic Bevy code often triggers these lints, and the CI workflow treats them as errors.
 # In some cases they may still signal poor code quality however, so consider commenting out these lines.

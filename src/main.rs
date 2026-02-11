@@ -1,6 +1,8 @@
 mod cave_noise;
 mod cave_world;
 mod chunk_colliders;
+mod mob_nav;
+mod mob_nav_vleue;
 mod player_controller;
 
 use avian3d::prelude::*;
@@ -12,6 +14,8 @@ use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
 
 use cave_world::CaveWorldPlugin;
 use chunk_colliders::ChunkColliderPlugin;
+use mob_nav::MobNavPlugin;
+use mob_nav_vleue::MobNavVleuePlugin;
 use player_controller::PlayerControllerPlugin;
 
 #[derive(Resource, Default)]
@@ -33,6 +37,8 @@ fn main() {
         .add_plugins(CaveWorldPlugin)
         .add_plugins(PlayerControllerPlugin)
         .add_plugins(ChunkColliderPlugin)
+        .add_plugins(MobNavPlugin)
+        .add_plugins(MobNavVleuePlugin)
         .add_systems(Update, toggle_inspector_mode)
         .add_systems(Startup, setup)
         .run();
