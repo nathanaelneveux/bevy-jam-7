@@ -425,9 +425,6 @@ fn follow_mob_nav_paths(
         };
 
         let mut desired = next_waypoint - position;
-        if agent.movement_mode == MobNavMovementMode::Ground {
-            desired.y = 0.0;
-        }
         desired = desired.normalize_or_zero() * agent.max_speed;
         steering.desired_velocity = desired;
 
