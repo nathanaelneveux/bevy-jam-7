@@ -1,11 +1,14 @@
-use avian3d::prelude::Collider;
 use bevy::math::vec2;
+use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
-use bevy_voxel_world::custom_meshing::CHUNK_SIZE_F;
-use bevy_voxel_world::prelude::{Chunk, ChunkWillDespawn, ChunkWillSpawn, NeedsDespawn};
+use bevy_voxel_world::custom_meshing::{CHUNK_SIZE_F, CHUNK_SIZE_I};
+use bevy_voxel_world::prelude::{
+    Chunk, ChunkWillChangeLod, ChunkWillDespawn, ChunkWillSpawn, NeedsDespawn, VoxelWorld,
+    WorldVoxel,
+};
 use vleue_navigator::prelude::{
     ManagedNavMesh, NavMesh, NavMeshSettings, NavMeshStatus, NavMeshUpdateMode,
-    NavmeshUpdaterPlugin, Triangulation, VleueNavigatorPlugin,
+    NavmeshUpdaterPlugin, PrimitiveObstacle, Triangulation, VleueNavigatorPlugin,
 };
 
 use crate::cave_world::CaveWorld;
@@ -19,16 +22,17 @@ pub struct MobNavVleuePlugin;
 impl Plugin for MobNavVleuePlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(MobNavVleueConfig::default())
+            .init_resource::<ChunkNavObstacleMap>()
             .add_plugins((
                 VleueNavigatorPlugin,
-                NavmeshUpdaterPlugin::<Collider, MobNavObstacle>::default(),
+                NavmeshUpdaterPlugin::<PrimitiveObstacle, MobNavObstacle>::default(),
             ))
             .add_systems(Startup, spawn_ground_navmesh)
             .add_systems(
                 Update,
                 (
-                    tag_chunk_colliders_as_obstacles,
-                    untag_chunk_entities_without_colliders,
+                    rebuild_chunk_obstacles,
+                    clear_despawned_chunk_obstacles,
                     sync_navmesh_bounds,
                     queue_repath_on_navmesh_ready,
                 ),
@@ -69,6 +73,11 @@ impl Default for MobNavVleueConfig {
 #[derive(Component)]
 struct MobNavGroundNavmesh;
 
+#[derive(Resource, Default)]
+struct ChunkNavObstacleMap {
+    by_chunk: HashMap<Entity, Vec<Entity>>,
+}
+
 fn spawn_ground_navmesh(mut commands: Commands, config: Res<MobNavVleueConfig>) {
     commands.spawn((
         MobNavGroundNavmesh,
@@ -84,39 +93,96 @@ fn spawn_ground_navmesh(mut commands: Commands, config: Res<MobNavVleueConfig>) 
     ));
 }
 
-fn tag_chunk_colliders_as_obstacles(
+fn rebuild_chunk_obstacles(
     mut commands: Commands,
+    mut obstacle_map: ResMut<ChunkNavObstacleMap>,
+    voxel_world: VoxelWorld<CaveWorld>,
+    config: Res<MobNavVleueConfig>,
     chunks: Query<
         (Entity, &Chunk<CaveWorld>),
-        (
-            With<Collider>,
-            Without<MobNavObstacle>,
-            Without<NeedsDespawn>,
-        ),
+        (With<Mesh3d>, Changed<Mesh3d>, Without<NeedsDespawn>),
     >,
+    mut lod_changes: MessageReader<ChunkWillChangeLod<CaveWorld>>,
 ) {
-    for (entity, chunk) in &chunks {
-        if chunk.lod_level == 0 {
-            commands.entity(entity).insert(MobNavObstacle);
+    let mut dirty_chunks = std::collections::HashSet::new();
+    for (entity, _) in &chunks {
+        dirty_chunks.insert(entity);
+    }
+    for event in lod_changes.read() {
+        dirty_chunks.insert(event.entity);
+    }
+
+    for chunk_entity in dirty_chunks {
+        if let Some(existing) = obstacle_map.by_chunk.remove(&chunk_entity) {
+            despawn_entities(&mut commands, existing);
+        }
+
+        let Ok((_entity, chunk)) = chunks.get(chunk_entity) else {
+            continue;
+        };
+        if chunk.lod_level != 0 {
+            continue;
+        }
+
+        let Some(chunk_data) = voxel_world.get_chunk_data(chunk.position) else {
+            continue;
+        };
+        if chunk_data.is_empty() {
+            continue;
+        }
+
+        let y = config.navmesh_height.floor() as i32;
+        let blocked = collect_blocked_cells_at_height(chunk.position, y, |world| {
+            chunk_data.get_voxel_at_world_position(world)
+        });
+        let rectangles = merge_blocked_cells_to_rectangles(&blocked);
+
+        if rectangles.is_empty() {
+            continue;
+        }
+
+        let chunk_world_min_x = chunk.position.x * CHUNK_SIZE_I;
+        let chunk_world_min_z = chunk.position.z * CHUNK_SIZE_I;
+
+        let mut spawned = Vec::with_capacity(rectangles.len());
+        for rect in rectangles {
+            let width = (rect.x_end - rect.x_start + 1) as f32;
+            let depth = (rect.z_end - rect.z_start + 1) as f32;
+            let center_x = chunk_world_min_x as f32 + rect.x_start as f32 + width * 0.5;
+            let center_z = chunk_world_min_z as f32 + rect.z_start as f32 + depth * 0.5;
+
+            let entity = commands
+                .spawn((
+                    MobNavObstacle,
+                    PrimitiveObstacle::Rectangle(Rectangle {
+                        half_size: vec2(width * 0.5, depth * 0.5),
+                    }),
+                    Transform::from_xyz(center_x, config.navmesh_height, center_z),
+                ))
+                .id();
+            spawned.push(entity);
+        }
+
+        obstacle_map.by_chunk.insert(chunk_entity, spawned);
+    }
+}
+
+fn clear_despawned_chunk_obstacles(
+    mut commands: Commands,
+    mut obstacle_map: ResMut<ChunkNavObstacleMap>,
+    mut chunk_despawned: MessageReader<ChunkWillDespawn<CaveWorld>>,
+) {
+    for event in chunk_despawned.read() {
+        if let Some(existing) = obstacle_map.by_chunk.remove(&event.entity) {
+            despawn_entities(&mut commands, existing);
         }
     }
 }
 
-fn untag_chunk_entities_without_colliders(
-    mut commands: Commands,
-    missing_collider: Query<Entity, (With<MobNavObstacle>, Without<Collider>)>,
-    despawning: Query<Entity, (With<MobNavObstacle>, With<NeedsDespawn>)>,
-    invalid_lod: Query<(Entity, &Chunk<CaveWorld>), (With<MobNavObstacle>, With<Collider>)>,
-) {
-    for entity in &missing_collider {
-        commands.entity(entity).remove::<MobNavObstacle>();
-    }
-    for entity in &despawning {
-        commands.entity(entity).remove::<MobNavObstacle>();
-    }
-    for (entity, chunk) in &invalid_lod {
-        if chunk.lod_level != 0 {
-            commands.entity(entity).remove::<MobNavObstacle>();
+fn despawn_entities(commands: &mut Commands, entities: Vec<Entity>) {
+    for entity in entities {
+        if let Ok(mut commands) = commands.get_entity(entity) {
+            commands.despawn();
         }
     }
 }
@@ -182,6 +248,126 @@ fn compute_loaded_xz_bounds(
     let max_z = (max_chunk_z + padding_chunks + 1) as f32 * CHUNK_SIZE_F;
 
     Some((min_x, max_x, min_z, max_z))
+}
+
+fn collect_blocked_cells_at_height<I: Copy + PartialEq>(
+    chunk_pos: IVec3,
+    y: i32,
+    get_voxel: impl Fn(IVec3) -> Option<WorldVoxel<I>>,
+) -> Vec<bool> {
+    let mut blocked = vec![false; (CHUNK_SIZE_I * CHUNK_SIZE_I) as usize];
+    let chunk_world_min = chunk_pos * CHUNK_SIZE_I;
+    let chunk_world_max = chunk_world_min + IVec3::splat(CHUNK_SIZE_I - 1);
+
+    if y < chunk_world_min.y || y > chunk_world_max.y {
+        return blocked;
+    }
+
+    for z in 0..CHUNK_SIZE_I {
+        for x in 0..CHUNK_SIZE_I {
+            let world = IVec3::new(chunk_world_min.x + x, y, chunk_world_min.z + z);
+            let is_solid =
+                get_voxel(world).is_some_and(|voxel| matches!(voxel, WorldVoxel::Solid(_)));
+            blocked[(z * CHUNK_SIZE_I + x) as usize] = is_solid;
+        }
+    }
+
+    blocked
+}
+
+#[derive(Clone, Copy)]
+struct GridRect {
+    x_start: i32,
+    x_end: i32,
+    z_start: i32,
+    z_end: i32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct Span {
+    x_start: i32,
+    x_end: i32,
+}
+
+fn merge_blocked_cells_to_rectangles(blocked: &[bool]) -> Vec<GridRect> {
+    #[derive(Clone, Copy)]
+    struct ActiveRect {
+        x_start: i32,
+        x_end: i32,
+        z_start: i32,
+        z_end: i32,
+    }
+
+    let mut finished = Vec::new();
+    let mut active: HashMap<Span, ActiveRect> = HashMap::default();
+
+    for z in 0..CHUNK_SIZE_I {
+        let spans = row_spans(blocked, z);
+        let current_spans: std::collections::HashSet<_> = spans.iter().copied().collect();
+
+        let mut next_active: HashMap<Span, ActiveRect> = HashMap::default();
+
+        for span in spans {
+            if let Some(mut rect) = active.remove(&span) {
+                rect.z_end = z;
+                next_active.insert(span, rect);
+            } else {
+                next_active.insert(
+                    span,
+                    ActiveRect {
+                        x_start: span.x_start,
+                        x_end: span.x_end,
+                        z_start: z,
+                        z_end: z,
+                    },
+                );
+            }
+        }
+
+        for (span, rect) in active.drain() {
+            if !current_spans.contains(&span) {
+                finished.push(rect);
+            }
+        }
+
+        active = next_active;
+    }
+
+    finished.extend(active.into_values());
+
+    finished
+        .into_iter()
+        .map(|r| GridRect {
+            x_start: r.x_start,
+            x_end: r.x_end,
+            z_start: r.z_start,
+            z_end: r.z_end,
+        })
+        .collect()
+}
+
+fn row_spans(blocked: &[bool], z: i32) -> Vec<Span> {
+    let mut spans = Vec::new();
+    let mut x = 0;
+
+    while x < CHUNK_SIZE_I {
+        let idx = (z * CHUNK_SIZE_I + x) as usize;
+        if !blocked[idx] {
+            x += 1;
+            continue;
+        }
+
+        let start = x;
+        while x < CHUNK_SIZE_I && blocked[(z * CHUNK_SIZE_I + x) as usize] {
+            x += 1;
+        }
+        spans.push(Span {
+            x_start: start,
+            x_end: x - 1,
+        });
+    }
+
+    spans
 }
 
 fn square_triangulation(half_extent: f32) -> Triangulation {
