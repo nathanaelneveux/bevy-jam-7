@@ -8,14 +8,17 @@ mod player_controller;
 use avian3d::prelude::*;
 use bevy::asset::AssetMetaCheck;
 use bevy::prelude::*;
+use bevy::time::common_conditions::on_timer;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use bevy_enhanced_input::prelude::EnhancedInputPlugin;
 use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
+use std::time::Duration;
 
 use cave_world::CaveWorldPlugin;
 use chunk_colliders::ChunkColliderPlugin;
 use mob_nav::{
-    MobNavAgent, MobNavGoal, MobNavMovementMode, MobNavPlugin, MobNavStatus, MobNavUpdateSet,
+    MobNavAgent, MobNavGoal, MobNavMovementMode, MobNavPlugin, MobNavRepath, MobNavStatus,
+    MobNavUpdateSet,
 };
 use mob_nav_northstar::MobNavNorthstarPlugin;
 use player_controller::PlayerControllerPlugin;
@@ -45,6 +48,9 @@ fn main() {
         .add_systems(
             Update,
             (
+                retry_blocked_nav_test_mobs
+                    .after(MobNavUpdateSet::ApplyResults)
+                    .run_if(on_timer(Duration::from_secs_f32(0.75))),
                 advance_nav_test_patrols.after(MobNavUpdateSet::ApplyResults),
                 sync_nav_goal_markers,
             ),
@@ -130,6 +136,7 @@ fn spawn_nav_test_mobs(
             NavTestGround,
             RigidBody::Dynamic,
             Collider::capsule(0.35, 0.7),
+            Friction::ZERO.with_combine_rule(CoefficientCombine::Min),
             LinearVelocity::ZERO,
             LockedAxes::ROTATION_LOCKED,
             MobNavAgent {
@@ -190,6 +197,17 @@ fn spawn_nav_test_mobs(
         MeshMaterial3d(materials.add(Color::srgb(0.2, 1.0, 0.9))),
         Transform::from_translation(flyer_points[1] + Vec3::Y * 0.2),
     ));
+}
+
+fn retry_blocked_nav_test_mobs(
+    mut commands: Commands,
+    mobs: Query<(Entity, &MobNavStatus), With<NavTestGround>>,
+) {
+    for (entity, status) in &mobs {
+        if *status == MobNavStatus::Blocked {
+            commands.entity(entity).insert(MobNavRepath);
+        }
+    }
 }
 
 fn advance_nav_test_patrols(mut mobs: Query<(&MobNavStatus, &mut MobNavGoal, &mut NavTestPatrol)>) {
