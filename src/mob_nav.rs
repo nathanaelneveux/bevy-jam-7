@@ -1,9 +1,14 @@
-use avian3d::prelude::LinearVelocity;
+use avian3d::prelude::{Collisions, LinearVelocity};
 use bevy::prelude::*;
 use bevy_voxel_world::prelude::VoxelWorld;
 use std::collections::HashSet;
 
 use crate::cave_world::CaveWorld;
+
+const GROUND_NORMAL_Y_THRESHOLD: f32 = 0.65;
+const GROUND_JUMP_TRIGGER_DESIRED_Y: f32 = 0.9;
+const GROUND_JUMP_SPEED: f32 = 5.0;
+const WALL_NORMAL_MAX_Y: f32 = 0.15;
 
 pub struct MobNavPlugin;
 
@@ -383,8 +388,10 @@ fn apply_plan_results(
 
 fn follow_mob_nav_paths(
     time: Res<Time>,
+    collisions: Collisions,
     mut movers: Query<
         (
+            Entity,
             &MobNavAgent,
             &mut MobNavPath,
             &mut MobNavStatus,
@@ -395,7 +402,9 @@ fn follow_mob_nav_paths(
         With<MobNavAgent>,
     >,
 ) {
-    for (agent, mut path, mut status, mut steering, mut transform, linear_velocity) in &mut movers {
+    for (entity, agent, mut path, mut status, mut steering, mut transform, linear_velocity) in
+        &mut movers
+    {
         let mut linear_velocity = linear_velocity;
 
         if *status != MobNavStatus::FollowingPath {
@@ -467,10 +476,14 @@ fn follow_mob_nav_paths(
         if let Some(linear_velocity) = linear_velocity.as_mut() {
             match agent.movement_mode {
                 MobNavMovementMode::Ground => {
+                    let desired = project_horizontal_off_walls(entity, desired, &collisions);
                     linear_velocity.0.x = desired.x;
                     linear_velocity.0.z = desired.z;
-                    if desired.y > 0.0 {
-                        linear_velocity.0.y = linear_velocity.0.y.max(desired.y);
+                    if desired.y > GROUND_JUMP_TRIGGER_DESIRED_Y
+                        && linear_velocity.0.y <= 0.1
+                        && is_grounded(entity, &collisions)
+                    {
+                        linear_velocity.0.y = linear_velocity.0.y.max(GROUND_JUMP_SPEED);
                     }
                 }
                 MobNavMovementMode::FlyingLineOfSight => {
@@ -481,6 +494,56 @@ fn follow_mob_nav_paths(
             transform.translation += desired * time.delta_secs();
         }
     }
+}
+
+fn project_horizontal_off_walls(entity: Entity, desired: Vec3, collisions: &Collisions) -> Vec3 {
+    let mut horizontal = Vec2::new(desired.x, desired.z);
+
+    for pair in collisions.collisions_with(entity) {
+        if !pair.generates_constraints() {
+            continue;
+        }
+
+        for manifold in &pair.manifolds {
+            let normal_from_entity = if pair.collider1 == entity {
+                manifold.normal
+            } else {
+                -manifold.normal
+            };
+            if normal_from_entity.y.abs() > WALL_NORMAL_MAX_Y {
+                continue;
+            }
+
+            let wall_normal = Vec2::new(normal_from_entity.x, normal_from_entity.z).normalize_or_zero();
+            if wall_normal == Vec2::ZERO {
+                continue;
+            }
+
+            let into_wall = horizontal.dot(wall_normal);
+            if into_wall > 0.0 {
+                horizontal -= wall_normal * into_wall;
+            }
+        }
+    }
+
+    Vec3::new(horizontal.x, desired.y, horizontal.y)
+}
+
+fn is_grounded(entity: Entity, collisions: &Collisions) -> bool {
+    collisions.collisions_with(entity).any(|pair| {
+        if !pair.generates_constraints() {
+            return false;
+        }
+
+        pair.manifolds.iter().any(|manifold| {
+            let normal = if pair.collider1 == entity {
+                -manifold.normal
+            } else {
+                manifold.normal
+            };
+            normal.y >= GROUND_NORMAL_Y_THRESHOLD
+        })
+    })
 }
 
 fn stop_non_following_agents(

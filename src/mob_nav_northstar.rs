@@ -396,6 +396,7 @@ fn ensure_rolling_grid_for_request(
     .chunk_size(config.chunk_size.max(1))
     .chunk_depth(config.chunk_depth.max(1))
     .default_impassable()
+    .add_neighbor_filter(filter::NoCornerCuttingFlat)
     .build();
     let mut grid = CardinalIsoGrid::new(&settings);
 
