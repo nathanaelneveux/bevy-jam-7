@@ -46,6 +46,10 @@ impl Plugin for MobNavPlugin {
                 apply_plan_results.in_set(MobNavUpdateSet::ApplyResults),
             )
             .add_systems(
+                Update,
+                draw_mob_nav_path_gizmos.after(MobNavUpdateSet::ApplyResults),
+            )
+            .add_systems(
                 FixedUpdate,
                 (follow_mob_nav_paths, stop_non_following_agents),
             );
@@ -506,6 +510,45 @@ fn stop_non_following_agents(
                     linear_velocity.0 = Vec3::ZERO;
                 }
             }
+        }
+    }
+}
+
+fn draw_mob_nav_path_gizmos(
+    mut gizmos: Gizmos,
+    paths: Query<(&GlobalTransform, &MobNavPath, &MobNavStatus), With<MobNavAgent>>,
+) {
+    let active_color = Color::srgba(0.15, 0.85, 1.0, 0.95);
+    let remaining_color = Color::srgba(1.0, 0.7, 0.2, 0.85);
+    let waypoint_color = Color::srgba(1.0, 0.95, 0.25, 0.9);
+    let lift = Vec3::Y * 0.08;
+    let cross_half = 0.12;
+
+    for (transform, path, status) in &paths {
+        if path.next_waypoint >= path.waypoints.len() {
+            continue;
+        }
+
+        let mut from = transform.translation() + lift;
+        for (index, waypoint) in path.waypoints.iter().enumerate().skip(path.next_waypoint) {
+            let to = *waypoint + lift;
+            let color = if index == path.next_waypoint && *status == MobNavStatus::FollowingPath {
+                active_color
+            } else {
+                remaining_color
+            };
+            gizmos.line(from, to, color);
+            gizmos.line(
+                to + Vec3::new(-cross_half, 0.0, 0.0),
+                to + Vec3::new(cross_half, 0.0, 0.0),
+                waypoint_color,
+            );
+            gizmos.line(
+                to + Vec3::new(0.0, 0.0, -cross_half),
+                to + Vec3::new(0.0, 0.0, cross_half),
+                waypoint_color,
+            );
+            from = to;
         }
     }
 }
