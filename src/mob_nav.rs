@@ -399,13 +399,37 @@ fn follow_mob_nav_paths(
         }
 
         let position = transform.translation;
+        while let Some(next_waypoint) = path.next() {
+            let reached = match agent.movement_mode {
+                MobNavMovementMode::Ground => {
+                    let delta_xz = Vec2::new(
+                        next_waypoint.x - position.x,
+                        next_waypoint.z - position.z,
+                    );
+                    delta_xz.length() <= agent.arrival_tolerance
+                }
+                MobNavMovementMode::FlyingLineOfSight => {
+                    position.distance(next_waypoint) <= agent.arrival_tolerance
+                }
+            };
+            if !reached {
+                break;
+            }
 
-        while path.advance_if_reached(position, agent.arrival_tolerance) {
+            path.next_waypoint += 1;
             if path.is_complete() {
                 *status = MobNavStatus::Arrived;
                 steering.desired_velocity = Vec3::ZERO;
                 if let Some(linear_velocity) = linear_velocity.as_mut() {
-                    linear_velocity.0 = Vec3::ZERO;
+                    match agent.movement_mode {
+                        MobNavMovementMode::Ground => {
+                            linear_velocity.0.x = 0.0;
+                            linear_velocity.0.z = 0.0;
+                        }
+                        MobNavMovementMode::FlyingLineOfSight => {
+                            linear_velocity.0 = Vec3::ZERO;
+                        }
+                    }
                 }
                 break;
             }
@@ -419,7 +443,15 @@ fn follow_mob_nav_paths(
             *status = MobNavStatus::Arrived;
             steering.desired_velocity = Vec3::ZERO;
             if let Some(linear_velocity) = linear_velocity.as_mut() {
-                linear_velocity.0 = Vec3::ZERO;
+                match agent.movement_mode {
+                    MobNavMovementMode::Ground => {
+                        linear_velocity.0.x = 0.0;
+                        linear_velocity.0.z = 0.0;
+                    }
+                    MobNavMovementMode::FlyingLineOfSight => {
+                        linear_velocity.0 = Vec3::ZERO;
+                    }
+                }
             }
             continue;
         };
@@ -429,7 +461,18 @@ fn follow_mob_nav_paths(
         steering.desired_velocity = desired;
 
         if let Some(linear_velocity) = linear_velocity.as_mut() {
-            linear_velocity.0 = desired;
+            match agent.movement_mode {
+                MobNavMovementMode::Ground => {
+                    linear_velocity.0.x = desired.x;
+                    linear_velocity.0.z = desired.z;
+                    if desired.y > 0.0 {
+                        linear_velocity.0.y = linear_velocity.0.y.max(desired.y);
+                    }
+                }
+                MobNavMovementMode::FlyingLineOfSight => {
+                    linear_velocity.0 = desired;
+                }
+            }
         } else {
             transform.translation += desired * time.delta_secs();
         }
@@ -439,6 +482,7 @@ fn follow_mob_nav_paths(
 fn stop_non_following_agents(
     mut query: Query<
         (
+            &MobNavAgent,
             &MobNavStatus,
             &mut MobNavSteering,
             Option<&mut LinearVelocity>,
@@ -446,14 +490,22 @@ fn stop_non_following_agents(
         (With<MobNavAgent>, Without<MobNavPath>),
     >,
 ) {
-    for (status, mut steering, linear_velocity) in &mut query {
+    for (agent, status, mut steering, linear_velocity) in &mut query {
         if *status == MobNavStatus::FollowingPath {
             continue;
         }
 
         steering.desired_velocity = Vec3::ZERO;
         if let Some(mut linear_velocity) = linear_velocity {
-            linear_velocity.0 = Vec3::ZERO;
+            match agent.movement_mode {
+                MobNavMovementMode::Ground => {
+                    linear_velocity.0.x = 0.0;
+                    linear_velocity.0.z = 0.0;
+                }
+                MobNavMovementMode::FlyingLineOfSight => {
+                    linear_velocity.0 = Vec3::ZERO;
+                }
+            }
         }
     }
 }

@@ -128,7 +128,7 @@ fn spawn_nav_test_mobs(
         .spawn((
             Name::new("NavTestGround"),
             NavTestGround,
-            RigidBody::Kinematic,
+            RigidBody::Dynamic,
             Collider::capsule(0.35, 0.7),
             LinearVelocity::ZERO,
             LockedAxes::ROTATION_LOCKED,
@@ -194,7 +194,7 @@ fn spawn_nav_test_mobs(
 
 fn advance_nav_test_patrols(mut mobs: Query<(&MobNavStatus, &mut MobNavGoal, &mut NavTestPatrol)>) {
     for (status, mut goal, mut patrol) in &mut mobs {
-        if !matches!(*status, MobNavStatus::Arrived | MobNavStatus::Blocked) {
+        if *status != MobNavStatus::Arrived {
             continue;
         }
 
