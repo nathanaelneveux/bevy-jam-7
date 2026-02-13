@@ -16,6 +16,14 @@ const NAV_TEST_GAIT_SPEED_EPSILON: f32 = 0.1;
 const NAV_TEST_GAIT_HIP_SWING: f32 = 0.32;
 const NAV_TEST_GAIT_HIP_LIFT: f32 = 0.16;
 const NAV_TEST_GAIT_KNEE_BEND: f32 = 0.36;
+const NAV_TEST_GAIT_PHASE_GROUP_A: f32 = 0.0;
+const NAV_TEST_GAIT_PHASE_GROUP_B: f32 = PI;
+const NAV_TEST_IK_FOOT_RAY_ORIGIN_UP: f32 = 0.6;
+const NAV_TEST_IK_FOOT_RAY_DISTANCE: f32 = 2.4;
+const NAV_TEST_IK_STANCE_CLEARANCE: f32 = 0.05;
+const NAV_TEST_IK_SWING_LIFT: f32 = 0.22;
+const NAV_TEST_IK_KNEE_GAIN: f32 = 1.6;
+const NAV_TEST_IK_KNEE_MAX_DELTA: f32 = 0.55;
 
 pub struct NavSandboxPlugin;
 
@@ -62,9 +70,17 @@ struct NavTestSpiderRigReady;
 #[derive(Component, Clone, Copy)]
 struct NavTestSpiderLegBone {
     owner: Entity,
+    leg: SpiderLegId,
     side_sign: f32,
     phase_offset: f32,
     joint: SpiderLegJoint,
+}
+
+#[derive(Component, Clone, Copy)]
+struct NavTestSpiderFootBone {
+    owner: Entity,
+    leg: SpiderLegId,
+    phase_offset: f32,
 }
 
 #[derive(Component, Clone, Copy)]
@@ -76,6 +92,28 @@ struct NavTestSpiderBindPose {
 enum SpiderLegJoint {
     Hip,
     Knee,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SpiderLegId {
+    FrontLeft,
+    FrontRight,
+    RearLeft,
+    RearRight,
+}
+
+#[derive(Clone, Copy)]
+enum SpiderRigBoneDefinition {
+    Leg {
+        leg: SpiderLegId,
+        joint: SpiderLegJoint,
+        side_sign: f32,
+        phase_offset: f32,
+    },
+    Foot {
+        leg: SpiderLegId,
+        phase_offset: f32,
+    },
 }
 
 fn spawn_nav_test_mobs(
@@ -261,7 +299,7 @@ fn init_nav_test_spider_leg_rig(
     children_query: Query<&Children>,
     names: Query<&Name>,
     transforms: Query<&Transform>,
-    existing_leg_bones: Query<(), With<NavTestSpiderLegBone>>,
+    existing_leg_bones: Query<(), Or<(With<NavTestSpiderLegBone>, With<NavTestSpiderFootBone>)>>,
 ) {
     for (visual_root, visual_info) in &visual_roots {
         let mut stack = vec![visual_root];
@@ -277,8 +315,7 @@ fn init_nav_test_spider_leg_rig(
             let Ok(name) = names.get(entity) else {
                 continue;
             };
-            let Some((joint, side_sign, phase_offset)) = spider_leg_bone_definition(name.as_str())
-            else {
+            let Some(definition) = spider_leg_bone_definition(name.as_str()) else {
                 continue;
             };
 
@@ -292,20 +329,37 @@ fn init_nav_test_spider_leg_rig(
             };
 
             matched_bones += 1;
-            commands.entity(entity).insert((
-                NavTestSpiderLegBone {
-                    owner: visual_info.owner,
+            match definition {
+                SpiderRigBoneDefinition::Leg {
+                    leg,
+                    joint,
                     side_sign,
                     phase_offset,
-                    joint,
-                },
-                NavTestSpiderBindPose {
-                    local_rotation: transform.rotation,
-                },
-            ));
+                } => {
+                    commands.entity(entity).insert((
+                        NavTestSpiderLegBone {
+                            owner: visual_info.owner,
+                            leg,
+                            side_sign,
+                            phase_offset,
+                            joint,
+                        },
+                        NavTestSpiderBindPose {
+                            local_rotation: transform.rotation,
+                        },
+                    ));
+                }
+                SpiderRigBoneDefinition::Foot { leg, phase_offset } => {
+                    commands.entity(entity).insert(NavTestSpiderFootBone {
+                        owner: visual_info.owner,
+                        leg,
+                        phase_offset,
+                    });
+                }
+            }
         }
 
-        if matched_bones >= 8 {
+        if matched_bones >= 12 {
             commands.entity(visual_root).insert(NavTestSpiderRigReady);
         }
     }
@@ -313,7 +367,9 @@ fn init_nav_test_spider_leg_rig(
 
 fn animate_nav_test_spider_legs(
     time: Res<Time>,
+    spatial_query: SpatialQuery,
     movers: Query<&LinearVelocity, With<NavTestGround>>,
+    foot_bones: Query<(&NavTestSpiderFootBone, &GlobalTransform)>,
     mut leg_bones: Query<(&NavTestSpiderLegBone, &NavTestSpiderBindPose, &mut Transform)>,
 ) {
     let elapsed = time.elapsed_secs();
@@ -332,7 +388,6 @@ fn animate_nav_test_spider_legs(
         let gait_weight = ((speed - NAV_TEST_GAIT_SPEED_EPSILON) / 2.0).clamp(0.0, 1.0);
         let stride_frequency = NAV_TEST_GAIT_BASE_FREQ_HZ + speed * NAV_TEST_GAIT_FREQ_PER_SPEED_HZ;
         let phase = elapsed * TAU * stride_frequency + bone.phase_offset;
-
         let delta = match bone.joint {
             SpiderLegJoint::Hip => {
                 let swing = phase.sin() * NAV_TEST_GAIT_HIP_SWING * gait_weight;
@@ -340,7 +395,17 @@ fn animate_nav_test_spider_legs(
                 Quat::from_euler(EulerRot::XYZ, lift, 0.0, bone.side_sign * swing)
             }
             SpiderLegJoint::Knee => {
-                let bend = ((phase.sin() + 1.0) * 0.5) * NAV_TEST_GAIT_KNEE_BEND * gait_weight;
+                let knee_ik_delta = sample_knee_ik_delta(
+                    bone.owner,
+                    bone.leg,
+                    speed,
+                    elapsed,
+                    &spatial_query,
+                    &foot_bones,
+                ) * gait_weight;
+                let base_bend = ((phase.sin() + 1.0) * 0.5) * NAV_TEST_GAIT_KNEE_BEND * gait_weight;
+                let bend =
+                    (base_bend + knee_ik_delta).clamp(0.0, NAV_TEST_GAIT_KNEE_BEND + NAV_TEST_IK_KNEE_MAX_DELTA);
                 Quat::from_rotation_x(-bend)
             }
         };
@@ -349,16 +414,112 @@ fn animate_nav_test_spider_legs(
     }
 }
 
-fn spider_leg_bone_definition(name: &str) -> Option<(SpiderLegJoint, f32, f32)> {
+fn sample_knee_ik_delta(
+    owner: Entity,
+    leg: SpiderLegId,
+    speed: f32,
+    elapsed: f32,
+    spatial_query: &SpatialQuery,
+    foot_bones: &Query<(&NavTestSpiderFootBone, &GlobalTransform)>,
+) -> f32 {
+    let Some((foot_bone, foot_global_transform)) = foot_bones
+        .iter()
+        .find(|(foot_bone, _)| foot_bone.owner == owner && foot_bone.leg == leg)
+    else {
+        return 0.0;
+    };
+
+    let stride_frequency = NAV_TEST_GAIT_BASE_FREQ_HZ + speed * NAV_TEST_GAIT_FREQ_PER_SPEED_HZ;
+    let phase = elapsed * TAU * stride_frequency + foot_bone.phase_offset;
+    let swing_lift = phase.sin().max(0.0) * NAV_TEST_IK_SWING_LIFT;
+
+    let foot_world = foot_global_transform.translation();
+    let ray_origin = foot_world + Vec3::Y * NAV_TEST_IK_FOOT_RAY_ORIGIN_UP;
+    let filter = SpatialQueryFilter::from_excluded_entities([owner]);
+    let Some(hit) = spatial_query.cast_ray(
+        ray_origin,
+        Dir3::NEG_Y,
+        NAV_TEST_IK_FOOT_RAY_DISTANCE,
+        true,
+        &filter,
+    ) else {
+        return 0.0;
+    };
+
+    let ground_height = ray_origin.y - hit.distance;
+    let current_clearance = foot_world.y - ground_height;
+    let target_clearance = NAV_TEST_IK_STANCE_CLEARANCE + swing_lift;
+    let clearance_error = current_clearance - target_clearance;
+
+    (-clearance_error * NAV_TEST_IK_KNEE_GAIN).clamp(-NAV_TEST_IK_KNEE_MAX_DELTA, NAV_TEST_IK_KNEE_MAX_DELTA)
+}
+
+fn spider_leg_bone_definition(name: &str) -> Option<SpiderRigBoneDefinition> {
     match name {
-        "Bone.003.L" => Some((SpiderLegJoint::Hip, -1.0, 0.0)),
-        "Bone.002.L" => Some((SpiderLegJoint::Knee, -1.0, 0.0)),
-        "Bone.003.R" => Some((SpiderLegJoint::Hip, 1.0, 0.0)),
-        "Bone.002.R" => Some((SpiderLegJoint::Knee, 1.0, 0.0)),
-        "Bone.008.L" => Some((SpiderLegJoint::Hip, -1.0, PI)),
-        "Bone.005.L" => Some((SpiderLegJoint::Knee, -1.0, PI)),
-        "Bone.008.R" => Some((SpiderLegJoint::Hip, 1.0, PI)),
-        "Bone.005.R" => Some((SpiderLegJoint::Knee, 1.0, PI)),
+        "HipFront.L" => Some(SpiderRigBoneDefinition::Leg {
+            leg: SpiderLegId::FrontLeft,
+            joint: SpiderLegJoint::Hip,
+            side_sign: -1.0,
+            phase_offset: NAV_TEST_GAIT_PHASE_GROUP_A,
+        }),
+        "KneeFront.L" => Some(SpiderRigBoneDefinition::Leg {
+            leg: SpiderLegId::FrontLeft,
+            joint: SpiderLegJoint::Knee,
+            side_sign: -1.0,
+            phase_offset: NAV_TEST_GAIT_PHASE_GROUP_A,
+        }),
+        "FootFront.L" => Some(SpiderRigBoneDefinition::Foot {
+            leg: SpiderLegId::FrontLeft,
+            phase_offset: NAV_TEST_GAIT_PHASE_GROUP_A,
+        }),
+        "HipFront.R" => Some(SpiderRigBoneDefinition::Leg {
+            leg: SpiderLegId::FrontRight,
+            joint: SpiderLegJoint::Hip,
+            side_sign: 1.0,
+            phase_offset: NAV_TEST_GAIT_PHASE_GROUP_B,
+        }),
+        "KneeFront.R" => Some(SpiderRigBoneDefinition::Leg {
+            leg: SpiderLegId::FrontRight,
+            joint: SpiderLegJoint::Knee,
+            side_sign: 1.0,
+            phase_offset: NAV_TEST_GAIT_PHASE_GROUP_B,
+        }),
+        "FootFront.R" => Some(SpiderRigBoneDefinition::Foot {
+            leg: SpiderLegId::FrontRight,
+            phase_offset: NAV_TEST_GAIT_PHASE_GROUP_B,
+        }),
+        "HipRear.L" => Some(SpiderRigBoneDefinition::Leg {
+            leg: SpiderLegId::RearLeft,
+            joint: SpiderLegJoint::Hip,
+            side_sign: -1.0,
+            phase_offset: NAV_TEST_GAIT_PHASE_GROUP_B,
+        }),
+        "KneeRear.L" => Some(SpiderRigBoneDefinition::Leg {
+            leg: SpiderLegId::RearLeft,
+            joint: SpiderLegJoint::Knee,
+            side_sign: -1.0,
+            phase_offset: NAV_TEST_GAIT_PHASE_GROUP_B,
+        }),
+        "FootRear.L" => Some(SpiderRigBoneDefinition::Foot {
+            leg: SpiderLegId::RearLeft,
+            phase_offset: NAV_TEST_GAIT_PHASE_GROUP_B,
+        }),
+        "HipRear.R" => Some(SpiderRigBoneDefinition::Leg {
+            leg: SpiderLegId::RearRight,
+            joint: SpiderLegJoint::Hip,
+            side_sign: 1.0,
+            phase_offset: NAV_TEST_GAIT_PHASE_GROUP_A,
+        }),
+        "KneeRear.R" => Some(SpiderRigBoneDefinition::Leg {
+            leg: SpiderLegId::RearRight,
+            joint: SpiderLegJoint::Knee,
+            side_sign: 1.0,
+            phase_offset: NAV_TEST_GAIT_PHASE_GROUP_A,
+        }),
+        "FootRear.R" => Some(SpiderRigBoneDefinition::Foot {
+            leg: SpiderLegId::RearRight,
+            phase_offset: NAV_TEST_GAIT_PHASE_GROUP_A,
+        }),
         _ => None,
     }
 }
