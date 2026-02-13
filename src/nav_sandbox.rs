@@ -74,7 +74,9 @@ fn spawn_nav_test_mobs(
                 max_speed: 4.0,
                 arrival_tolerance: 0.4,
             },
-            MobNavGoal { position: ground_goal },
+            MobNavGoal {
+                position: ground_goal,
+            },
             NavTestPatrol {
                 points: ground_points,
                 next_target_index: ground_next_target_index,
@@ -160,13 +162,14 @@ fn advance_nav_test_patrols(mut mobs: Query<(&MobNavStatus, &mut MobNavGoal, &mu
     }
 }
 
-fn patrol_spawn_goal_and_next_index(
-    points: &[Vec3],
-    fallback: Vec3,
-) -> (Vec3, Vec3, usize) {
+fn patrol_spawn_goal_and_next_index(points: &[Vec3], fallback: Vec3) -> (Vec3, Vec3, usize) {
     let spawn = points.first().copied().unwrap_or(fallback);
     let goal = points.get(1).copied().unwrap_or(spawn);
-    let next_target_index = if points.len() >= 2 { 2 % points.len() } else { 0 };
+    let next_target_index = if points.len() >= 2 {
+        2 % points.len()
+    } else {
+        0
+    };
     (spawn, goal, next_target_index)
 }
 

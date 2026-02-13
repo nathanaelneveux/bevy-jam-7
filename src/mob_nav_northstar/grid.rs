@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy_northstar::grid::GridSettings;
-use bevy_northstar::prelude::{filter, CardinalIsoGrid, GridSettingsBuilder, Nav};
+use bevy_northstar::prelude::{CardinalIsoGrid, GridSettingsBuilder, Nav, filter};
 use bevy_voxel_world::prelude::VoxelWorld;
 
 use crate::cave_world::CaveWorld;
@@ -57,11 +57,7 @@ pub(crate) fn ensure_rolling_grid_for_player(
     rolling.initialized = true;
 }
 
-pub(crate) fn world_to_local(
-    world: IVec3,
-    min_world: IVec3,
-    max_world: IVec3,
-) -> Option<UVec3> {
+pub(crate) fn world_to_local(world: IVec3, min_world: IVec3, max_world: IVec3) -> Option<UVec3> {
     if world.cmplt(min_world).any() || world.cmpgt(max_world).any() {
         return None;
     }

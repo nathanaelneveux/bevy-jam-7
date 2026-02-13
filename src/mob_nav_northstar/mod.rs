@@ -18,12 +18,19 @@ pub struct MobNavNorthstarPlugin;
 
 impl Plugin for MobNavNorthstarPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(MobNavNorthstarConfig::default())
-            .insert_resource(NorthstarPluginSettings {
+        if app
+            .world()
+            .get_resource::<NorthstarPluginSettings>()
+            .is_none()
+        {
+            app.insert_resource(NorthstarPluginSettings {
                 // We consume full paths ourselves instead of using NextPos stepping.
                 max_collision_avoidance_agents_per_frame: 0,
                 ..default()
-            })
+            });
+        }
+
+        app.init_resource::<MobNavNorthstarConfig>()
             .init_resource::<grid::MobNavNorthstarRollingGrid>()
             .add_plugins(NorthstarPlugin::<CardinalIsoNeighborhood>::default())
             .add_systems(

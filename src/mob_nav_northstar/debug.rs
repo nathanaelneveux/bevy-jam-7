@@ -113,7 +113,12 @@ pub(crate) fn draw_northstar_grid_debug(
         (cache.max_world.y + 1) as f32,
         (cache.max_world.z + 1) as f32,
     );
-    draw_debug_aabb(&mut gizmos, full_min, full_max, Color::srgba(0.2, 0.8, 1.0, 0.35));
+    draw_debug_aabb(
+        &mut gizmos,
+        full_min,
+        full_max,
+        Color::srgba(0.2, 0.8, 1.0, 0.35),
+    );
 
     let marker_half = debug.marker_half_size.max(0.02);
     if debug.show_passable {

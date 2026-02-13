@@ -38,7 +38,7 @@ impl Plugin for MobNavPlugin {
             )
             .add_systems(
                 Update,
-                ensure_nav_status.in_set(MobNavUpdateSet::EnsureState),
+                ensure_nav_state_for_added_agents.in_set(MobNavUpdateSet::EnsureState),
             )
             .add_systems(
                 Update,
@@ -220,9 +220,9 @@ struct MobNavPendingRequest {
 #[derive(Resource, Default)]
 struct MobNavRequestCounter(u64);
 
-fn ensure_nav_status(
+fn ensure_nav_state_for_added_agents(
     mut commands: Commands,
-    entities: Query<(Entity, Option<&MobNavStatus>, Option<&MobNavSteering>), With<MobNavAgent>>,
+    entities: Query<(Entity, Option<&MobNavStatus>, Option<&MobNavSteering>), Added<MobNavAgent>>,
 ) {
     for (entity, status, steering) in &entities {
         let mut entity_commands = commands.entity(entity);
@@ -309,14 +309,11 @@ fn queue_nav_request(
         movement_mode,
         reason,
     });
-    commands
-        .entity(entity)
-        .remove::<MobNavPath>()
-        .insert((
-            MobNavPendingRequest { request_id },
-            MobNavSteering::default(),
-            MobNavStatus::Planning,
-        ));
+    commands.entity(entity).remove::<MobNavPath>().insert((
+        MobNavPendingRequest { request_id },
+        MobNavSteering::default(),
+        MobNavStatus::Planning,
+    ));
 }
 
 fn built_in_flying_los_planner(
@@ -350,7 +347,14 @@ fn built_in_flying_los_planner(
         };
 
         let ray = Ray3d::new(request.from, direction);
-        let blocked = voxel_world.raycast(ray, &|(_pos, _vox)| true).is_some();
+        let direction_vec = direction.as_vec3();
+        let max_distance = distance + 1.0;
+        let blocked = voxel_world
+            .raycast(ray, &|(voxel_pos, _vox)| {
+                let along_ray = (voxel_pos - request.from).dot(direction_vec);
+                along_ray >= -0.001 && along_ray <= max_distance
+            })
+            .is_some();
 
         let result = if blocked {
             MobNavPlanResultKind::Blocked
@@ -381,19 +385,21 @@ fn apply_plan_results(
 
         match &result.result {
             MobNavPlanResultKind::Path(waypoints) => {
-                let status = if waypoints.is_empty() {
-                    MobNavStatus::Arrived
+                if waypoints.is_empty() {
+                    commands
+                        .entity(result.entity)
+                        .remove::<(MobNavPendingRequest, MobNavPath)>()
+                        .insert((MobNavSteering::default(), MobNavStatus::Arrived));
                 } else {
-                    MobNavStatus::FollowingPath
-                };
-                commands
-                    .entity(result.entity)
-                    .remove::<MobNavPendingRequest>()
-                    .insert((
-                        MobNavPath::new(waypoints.clone()),
-                        MobNavSteering::default(),
-                        status,
-                    ));
+                    commands
+                        .entity(result.entity)
+                        .remove::<MobNavPendingRequest>()
+                        .insert((
+                            MobNavPath::new(waypoints.clone()),
+                            MobNavSteering::default(),
+                            MobNavStatus::FollowingPath,
+                        ));
+                }
             }
             MobNavPlanResultKind::Blocked => {
                 commands
@@ -406,6 +412,7 @@ fn apply_plan_results(
 }
 
 fn follow_mob_nav_paths(
+    mut commands: Commands,
     time: Res<Time>,
     collisions: Collisions,
     mut movers: Query<
@@ -434,10 +441,8 @@ fn follow_mob_nav_paths(
         while let Some(next_waypoint) = path.next() {
             let reached = match agent.movement_mode {
                 MobNavMovementMode::Ground => {
-                    let delta_xz = Vec2::new(
-                        next_waypoint.x - position.x,
-                        next_waypoint.z - position.z,
-                    );
+                    let delta_xz =
+                        Vec2::new(next_waypoint.x - position.x, next_waypoint.z - position.z);
                     delta_xz.length() <= agent.arrival_tolerance
                 }
                 MobNavMovementMode::FlyingLineOfSight => {
@@ -451,6 +456,7 @@ fn follow_mob_nav_paths(
             path.next_waypoint += 1;
             if path.is_complete() {
                 *status = MobNavStatus::Arrived;
+                commands.entity(entity).remove::<MobNavPath>();
                 steering.desired_velocity = Vec3::ZERO;
                 if let Some(linear_velocity) = linear_velocity.as_mut() {
                     match agent.movement_mode {
@@ -473,6 +479,7 @@ fn follow_mob_nav_paths(
 
         let Some(next_waypoint) = path.next() else {
             *status = MobNavStatus::Arrived;
+            commands.entity(entity).remove::<MobNavPath>();
             steering.desired_velocity = Vec3::ZERO;
             if let Some(linear_velocity) = linear_velocity.as_mut() {
                 match agent.movement_mode {
@@ -533,7 +540,8 @@ fn project_horizontal_off_walls(entity: Entity, desired: Vec3, collisions: &Coll
                 continue;
             }
 
-            let wall_normal = Vec2::new(normal_from_entity.x, normal_from_entity.z).normalize_or_zero();
+            let wall_normal =
+                Vec2::new(normal_from_entity.x, normal_from_entity.z).normalize_or_zero();
             if wall_normal == Vec2::ZERO {
                 continue;
             }

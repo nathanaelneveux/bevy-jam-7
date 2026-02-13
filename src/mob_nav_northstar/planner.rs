@@ -54,7 +54,12 @@ pub(crate) fn plan_ground_paths_with_northstar(
 
     let Some(grid_entity) = rolling.grid_entity else {
         for request in ground_requests {
-            write_blocked_result(&mut commands, &mut results, request.entity, request.request_id);
+            write_blocked_result(
+                &mut commands,
+                &mut results,
+                request.entity,
+                request.request_id,
+            );
         }
         return;
     };
@@ -71,7 +76,12 @@ pub(crate) fn plan_ground_paths_with_northstar(
             config.snap_search_radius_voxels,
             config.agent_height_voxels.max(1),
         ) else {
-            write_blocked_result(&mut commands, &mut results, request.entity, request.request_id);
+            write_blocked_result(
+                &mut commands,
+                &mut results,
+                request.entity,
+                request.request_id,
+            );
             continue;
         };
 
@@ -83,7 +93,12 @@ pub(crate) fn plan_ground_paths_with_northstar(
             config.snap_search_radius_voxels,
             config.agent_height_voxels.max(1),
         ) else {
-            write_blocked_result(&mut commands, &mut results, request.entity, request.request_id);
+            write_blocked_result(
+                &mut commands,
+                &mut results,
+                request.entity,
+                request.request_id,
+            );
             continue;
         };
 
@@ -129,15 +144,13 @@ pub(crate) fn collect_northstar_plan_results(
     mut results: MessageWriter<MobNavPlanResult>,
     config: Res<MobNavNorthstarConfig>,
     rolling: Res<MobNavNorthstarRollingGrid>,
-    query: Query<
-        (
-            Entity,
-            &MobNavNorthstarPendingRequest,
-            Option<&NorthstarPath>,
-            Has<PathfindingFailed>,
-            Has<RerouteFailed>,
-        ),
-    >,
+    query: Query<(
+        Entity,
+        &MobNavNorthstarPendingRequest,
+        Option<&NorthstarPath>,
+        Has<PathfindingFailed>,
+        Has<RerouteFailed>,
+    )>,
 ) {
     for (entity, pending, path, pathfinding_failed, reroute_failed) in &query {
         if pending.revision != rolling.revision {
@@ -154,7 +167,9 @@ pub(crate) fn collect_northstar_plan_results(
             let mut waypoints = path
                 .path()
                 .iter()
-                .map(|&local| local_to_world(local, pending.min_world, config.waypoint_center_offset))
+                .map(|&local| {
+                    local_to_world(local, pending.min_world, config.waypoint_center_offset)
+                })
                 .collect::<Vec<_>>();
             if waypoints
                 .first()

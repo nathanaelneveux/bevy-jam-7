@@ -2,6 +2,7 @@ use avian3d::prelude::*;
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
 use bevy_enhanced_input::prelude::*;
+use bevy_northstar::prelude::Blocking;
 use bevy_voxel_world::{custom_meshing::CHUNK_SIZE_I, prelude::VoxelWorldCamera};
 
 use crate::{
@@ -61,8 +62,8 @@ fn spawn_player(mut commands: Commands) {
     let spawn_radius_world = CAVE_WORLD_SPAWNING_DISTANCE as f32 * chunk_world_size;
     let fog_start =
         (spawn_radius_world - DEPTH_FOG_START_OFFSET_CHUNKS * chunk_world_size).max(32.0);
-    let fog_end = (spawn_radius_world - DEPTH_FOG_END_OFFSET_CHUNKS * chunk_world_size)
-        .max(fog_start + 1.0);
+    let fog_end =
+        (spawn_radius_world - DEPTH_FOG_END_OFFSET_CHUNKS * chunk_world_size).max(fog_start + 1.0);
 
     commands
         .spawn((
@@ -86,6 +87,7 @@ fn spawn_player(mut commands: Commands) {
                 grounded: false,
             },
             RigidBody::Kinematic,
+            Blocking,
             Collider::capsule(PLAYER_CAPSULE_RADIUS, PLAYER_CAPSULE_LENGTH),
             LinearVelocity::ZERO,
             CustomPositionIntegration,
