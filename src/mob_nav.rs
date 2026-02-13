@@ -15,6 +15,7 @@ pub struct MobNavPlugin;
 impl Plugin for MobNavPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MobNavRequestCounter>()
+            .init_resource::<MobNavDebugConfig>()
             .register_type::<MobNavAgent>()
             .register_type::<MobNavGoal>()
             .register_type::<MobNavPath>()
@@ -22,6 +23,7 @@ impl Plugin for MobNavPlugin {
             .register_type::<MobNavStatus>()
             .register_type::<MobNavMovementMode>()
             .register_type::<MobNavRepath>()
+            .register_type::<MobNavDebugConfig>()
             .add_message::<MobNavPlanRequest>()
             .add_message::<MobNavPlanResult>()
             .configure_sets(
@@ -52,12 +54,18 @@ impl Plugin for MobNavPlugin {
             )
             .add_systems(
                 Update,
-                draw_mob_nav_path_gizmos.after(MobNavUpdateSet::ApplyResults),
+                draw_mob_nav_path_gizmos
+                    .after(MobNavUpdateSet::ApplyResults)
+                    .run_if(mob_nav_debug_enabled),
             )
+            .add_systems(Update, toggle_mob_nav_path_debug)
             .add_systems(
                 FixedUpdate,
                 (follow_mob_nav_paths, stop_non_following_agents),
             );
+
+        #[cfg(feature = "northstar_debug")]
+        app.insert_resource(MobNavDebugConfig { draw_paths: true });
     }
 }
 
@@ -165,6 +173,12 @@ pub enum MobNavStatus {
     FollowingPath,
     Arrived,
     Blocked,
+}
+
+#[derive(Resource, Reflect, Debug, Clone, Default)]
+#[reflect(Resource)]
+pub struct MobNavDebugConfig {
+    pub draw_paths: bool,
 }
 
 #[derive(Reflect, Debug, Clone, Copy, PartialEq, Eq)]
@@ -297,7 +311,12 @@ fn queue_nav_request(
     });
     commands
         .entity(entity)
-        .insert((MobNavPendingRequest { request_id }, MobNavStatus::Planning));
+        .remove::<MobNavPath>()
+        .insert((
+            MobNavPendingRequest { request_id },
+            MobNavSteering::default(),
+            MobNavStatus::Planning,
+        ));
 }
 
 fn built_in_flying_los_planner(
@@ -613,5 +632,26 @@ fn draw_mob_nav_path_gizmos(
             );
             from = to;
         }
+    }
+}
+
+fn mob_nav_debug_enabled(debug_config: Res<MobNavDebugConfig>) -> bool {
+    debug_config.draw_paths
+}
+
+fn toggle_mob_nav_path_debug(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut debug_config: ResMut<MobNavDebugConfig>,
+) {
+    if keys.just_pressed(KeyCode::F7) {
+        debug_config.draw_paths = !debug_config.draw_paths;
+        info!(
+            "MobNav path debug {} (toggle: F7)",
+            if debug_config.draw_paths {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        );
     }
 }

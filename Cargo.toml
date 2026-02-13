@@ -3,6 +3,10 @@ name = "bevy_new_minimal"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+northstar_debug = []
+
 [dependencies]
 avian3d = { git = "https://github.com/Jondolf/avian", rev = "53443b162e7cc4ad7b5133575d9e416e9f8000ed" }
 bevy = "0.18"

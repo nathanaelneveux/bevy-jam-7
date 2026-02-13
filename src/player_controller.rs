@@ -2,9 +2,12 @@ use avian3d::prelude::*;
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
 use bevy_enhanced_input::prelude::*;
-use bevy_voxel_world::prelude::VoxelWorldCamera;
+use bevy_voxel_world::{custom_meshing::CHUNK_SIZE_I, prelude::VoxelWorldCamera};
 
-use crate::{InspectorMode, cave_world::CaveWorld};
+use crate::{
+    InspectorMode,
+    cave_world::{CAVE_WORLD_SPAWNING_DISTANCE, CaveWorld},
+};
 
 const LOOK_SENSITIVITY: f32 = 0.002;
 const PLAYER_WALK_SPEED: f32 = 8.5;
@@ -15,6 +18,8 @@ const PLAYER_CAPSULE_RADIUS: f32 = 0.4;
 const PLAYER_CAPSULE_LENGTH: f32 = 1.1;
 const PLAYER_CAMERA_HEIGHT: f32 = 0.55;
 const GROUND_NORMAL_Y_THRESHOLD: f32 = 0.65;
+const DEPTH_FOG_START_OFFSET_CHUNKS: f32 = 6.0;
+const DEPTH_FOG_END_OFFSET_CHUNKS: f32 = 0.75;
 
 pub struct PlayerControllerPlugin;
 
@@ -52,6 +57,13 @@ struct ControllerState {
 }
 
 fn spawn_player(mut commands: Commands) {
+    let chunk_world_size = CHUNK_SIZE_I as f32;
+    let spawn_radius_world = CAVE_WORLD_SPAWNING_DISTANCE as f32 * chunk_world_size;
+    let fog_start =
+        (spawn_radius_world - DEPTH_FOG_START_OFFSET_CHUNKS * chunk_world_size).max(32.0);
+    let fog_end = (spawn_radius_world - DEPTH_FOG_END_OFFSET_CHUNKS * chunk_world_size)
+        .max(fog_start + 1.0);
+
     commands
         .spawn((
             Player,
@@ -82,6 +94,14 @@ fn spawn_player(mut commands: Commands) {
         .with_children(|parent| {
             parent.spawn((
                 Camera3d::default(),
+                DistanceFog {
+                    color: Color::BLACK,
+                    falloff: FogFalloff::Linear {
+                        start: fog_start,
+                        end: fog_end,
+                    },
+                    ..default()
+                },
                 Transform::from_xyz(0.0, PLAYER_CAMERA_HEIGHT, 0.0),
                 PlayerCamera,
                 VoxelWorldCamera::<CaveWorld>::default(),

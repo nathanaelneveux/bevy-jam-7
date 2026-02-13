@@ -3,24 +3,21 @@ mod cave_world;
 mod chunk_colliders;
 mod mob_nav;
 mod mob_nav_northstar;
+mod nav_sandbox;
 mod player_controller;
 
 use avian3d::prelude::*;
 use bevy::asset::AssetMetaCheck;
 use bevy::prelude::*;
-use bevy::time::common_conditions::on_timer;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use bevy_enhanced_input::prelude::EnhancedInputPlugin;
 use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
-use std::time::Duration;
 
 use cave_world::CaveWorldPlugin;
 use chunk_colliders::ChunkColliderPlugin;
-use mob_nav::{
-    MobNavAgent, MobNavGoal, MobNavMovementMode, MobNavPlugin, MobNavRepath, MobNavStatus,
-    MobNavUpdateSet,
-};
+use mob_nav::MobNavPlugin;
 use mob_nav_northstar::MobNavNorthstarPlugin;
+use nav_sandbox::NavSandboxPlugin;
 use player_controller::PlayerControllerPlugin;
 
 #[derive(Resource, Default)]
@@ -30,6 +27,7 @@ pub(crate) struct InspectorMode {
 
 fn main() {
     App::new()
+        .insert_resource(ClearColor(Color::BLACK))
         .add_plugins(DefaultPlugins.set(AssetPlugin {
             meta_check: AssetMetaCheck::Never,
             ..default()
@@ -44,17 +42,7 @@ fn main() {
         .add_plugins(ChunkColliderPlugin)
         .add_plugins(MobNavPlugin)
         .add_plugins(MobNavNorthstarPlugin)
-        .add_systems(Startup, spawn_nav_test_mobs)
-        .add_systems(
-            Update,
-            (
-                retry_blocked_nav_test_mobs
-                    .after(MobNavUpdateSet::ApplyResults)
-                    .run_if(on_timer(Duration::from_secs_f32(0.75))),
-                advance_nav_test_patrols.after(MobNavUpdateSet::ApplyResults),
-                sync_nav_goal_markers,
-            ),
-        )
+        .add_plugins(NavSandboxPlugin)
         .add_systems(Update, toggle_inspector_mode)
         .add_systems(Startup, setup)
         .run();
@@ -104,135 +92,5 @@ fn apply_cursor_mode(cursor_options: &mut CursorOptions, inspector_enabled: bool
     } else {
         cursor_options.visible = false;
         cursor_options.grab_mode = CursorGrabMode::Locked;
-    }
-}
-
-#[derive(Component)]
-struct NavTestPatrol {
-    points: [Vec3; 2],
-    next_target_index: usize,
-}
-
-#[derive(Component)]
-struct NavGoalMarker {
-    tracked_entity: Entity,
-}
-
-#[derive(Component)]
-struct NavTestGround;
-
-fn spawn_nav_test_mobs(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
-    let ground_points_xz = [Vec2::new(-10.0, -6.0), Vec2::new(10.0, -6.0)];
-    let ground_points = ground_points_xz.map(|point| Vec3::new(point.x, 1.5, point.y));
-    let flyer_points = [Vec3::new(-12.0, 8.0, 8.0), Vec3::new(12.0, 8.0, 8.0)];
-
-    let ground = commands
-        .spawn((
-            Name::new("NavTestGround"),
-            NavTestGround,
-            RigidBody::Dynamic,
-            Collider::capsule(0.35, 0.7),
-            Friction::ZERO.with_combine_rule(CoefficientCombine::Min),
-            LinearVelocity::ZERO,
-            LockedAxes::ROTATION_LOCKED,
-            MobNavAgent {
-                movement_mode: MobNavMovementMode::Ground,
-                max_speed: 4.0,
-                arrival_tolerance: 0.4,
-            },
-            MobNavGoal {
-                position: ground_points[1],
-            },
-            NavTestPatrol {
-                points: ground_points,
-                next_target_index: 0,
-            },
-            Mesh3d(meshes.add(Capsule3d::new(0.35, 0.7))),
-            MeshMaterial3d(materials.add(Color::srgb(0.85, 0.35, 0.3))),
-            Transform::from_translation(ground_points[0]),
-        ))
-        .id();
-
-    let flyer = commands
-        .spawn((
-            Name::new("NavTestFlyer"),
-            MobNavAgent {
-                movement_mode: MobNavMovementMode::FlyingLineOfSight,
-                max_speed: 6.5,
-                arrival_tolerance: 0.6,
-            },
-            MobNavGoal {
-                position: flyer_points[1],
-            },
-            NavTestPatrol {
-                points: flyer_points,
-                next_target_index: 0,
-            },
-            Mesh3d(meshes.add(Sphere::new(0.45))),
-            MeshMaterial3d(materials.add(Color::srgb(0.25, 0.75, 0.9))),
-            Transform::from_translation(flyer_points[0]),
-        ))
-        .id();
-
-    commands.spawn((
-        Name::new("NavGoalMarkerGround"),
-        NavGoalMarker {
-            tracked_entity: ground,
-        },
-        Mesh3d(meshes.add(Cuboid::new(0.3, 0.3, 0.3))),
-        MeshMaterial3d(materials.add(Color::srgb(1.0, 0.8, 0.2))),
-        Transform::from_translation(ground_points[1] + Vec3::Y * 0.2),
-    ));
-
-    commands.spawn((
-        Name::new("NavGoalMarkerFlyer"),
-        NavGoalMarker {
-            tracked_entity: flyer,
-        },
-        Mesh3d(meshes.add(Cuboid::new(0.3, 0.3, 0.3))),
-        MeshMaterial3d(materials.add(Color::srgb(0.2, 1.0, 0.9))),
-        Transform::from_translation(flyer_points[1] + Vec3::Y * 0.2),
-    ));
-}
-
-fn retry_blocked_nav_test_mobs(
-    mut commands: Commands,
-    mobs: Query<(Entity, &MobNavStatus), With<NavTestGround>>,
-) {
-    for (entity, status) in &mobs {
-        if *status == MobNavStatus::Blocked {
-            commands.entity(entity).insert(MobNavRepath);
-        }
-    }
-}
-
-fn advance_nav_test_patrols(mut mobs: Query<(&MobNavStatus, &mut MobNavGoal, &mut NavTestPatrol)>) {
-    for (status, mut goal, mut patrol) in &mut mobs {
-        if *status != MobNavStatus::Arrived {
-            continue;
-        }
-
-        let target = patrol.points[patrol.next_target_index];
-        if goal.position.distance_squared(target) <= 0.0001 {
-            continue;
-        }
-
-        goal.position = target;
-        patrol.next_target_index = 1 - patrol.next_target_index;
-    }
-}
-
-fn sync_nav_goal_markers(
-    goals: Query<&MobNavGoal>,
-    mut markers: Query<(&NavGoalMarker, &mut Transform)>,
-) {
-    for (marker, mut transform) in &mut markers {
-        if let Ok(goal) = goals.get(marker.tracked_entity) {
-            transform.translation = goal.position + Vec3::Y * 0.2;
-        }
     }
 }

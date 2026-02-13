@@ -8,6 +8,8 @@ use crate::cave_noise::{CEILING_MAX_Y, CaveNoise, FLOOR_MIN_Y};
 
 const FLOOR_MATERIAL: u8 = 0;
 const CEILING_MATERIAL: u8 = 1;
+pub(crate) const CAVE_WORLD_SPAWNING_DISTANCE: u32 = 10;
+pub(crate) const CAVE_WORLD_MIN_DESPAWN_DISTANCE: u32 = 2;
 
 pub struct CaveWorldPlugin;
 
@@ -35,11 +37,11 @@ impl VoxelWorldConfig for CaveWorld {
     type ChunkUserBundle = ();
 
     fn spawning_distance(&self) -> u32 {
-        10
+        CAVE_WORLD_SPAWNING_DISTANCE
     }
 
     fn min_despawn_distance(&self) -> u32 {
-        2
+        CAVE_WORLD_MIN_DESPAWN_DISTANCE
     }
 
     fn voxel_lookup_delegate(&self) -> VoxelLookupDelegate<Self::MaterialIndex> {
