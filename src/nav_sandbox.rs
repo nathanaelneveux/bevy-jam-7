@@ -1,11 +1,21 @@
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy::time::common_conditions::on_timer;
+use std::f32::consts::{PI, TAU};
 use std::time::Duration;
 
 use crate::mob_nav::{
     MobNavAgent, MobNavGoal, MobNavMovementMode, MobNavRepath, MobNavStatus, MobNavUpdateSet,
 };
+
+const NAV_TEST_GROUND_VISUAL_Y_OFFSET: f32 = -1.05;
+const NAV_TEST_GROUND_VISUAL_YAW_OFFSET: f32 = PI;
+const NAV_TEST_GAIT_BASE_FREQ_HZ: f32 = 2.4;
+const NAV_TEST_GAIT_FREQ_PER_SPEED_HZ: f32 = 0.35;
+const NAV_TEST_GAIT_SPEED_EPSILON: f32 = 0.1;
+const NAV_TEST_GAIT_HIP_SWING: f32 = 0.32;
+const NAV_TEST_GAIT_HIP_LIFT: f32 = 0.16;
+const NAV_TEST_GAIT_KNEE_BEND: f32 = 0.36;
 
 pub struct NavSandboxPlugin;
 
@@ -17,7 +27,10 @@ impl Plugin for NavSandboxPlugin {
                 retry_blocked_nav_test_mobs
                     .after(MobNavUpdateSet::ApplyResults)
                     .run_if(on_timer(Duration::from_secs_f32(0.75))),
+                init_nav_test_spider_leg_rig,
                 advance_nav_test_patrols.after(MobNavUpdateSet::ApplyResults),
+                face_nav_test_ground_toward_movement.after(MobNavUpdateSet::ApplyResults),
+                animate_nav_test_spider_legs.after(MobNavUpdateSet::ApplyResults),
                 sync_nav_goal_markers,
             ),
         );
@@ -38,8 +51,36 @@ struct NavGoalMarker {
 #[derive(Component)]
 struct NavTestGround;
 
+#[derive(Component)]
+struct NavTestGroundVisualRoot {
+    owner: Entity,
+}
+
+#[derive(Component)]
+struct NavTestSpiderRigReady;
+
+#[derive(Component, Clone, Copy)]
+struct NavTestSpiderLegBone {
+    owner: Entity,
+    side_sign: f32,
+    phase_offset: f32,
+    joint: SpiderLegJoint,
+}
+
+#[derive(Component, Clone, Copy)]
+struct NavTestSpiderBindPose {
+    local_rotation: Quat,
+}
+
+#[derive(Clone, Copy)]
+enum SpiderLegJoint {
+    Hip,
+    Knee,
+}
+
 fn spawn_nav_test_mobs(
     mut commands: Commands,
+    asset_server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
@@ -59,6 +100,8 @@ fn spawn_nav_test_mobs(
         patrol_spawn_goal_and_next_index(&ground_points, Vec3::new(0.0, 1.5, 0.0));
     let (flyer_spawn, flyer_goal, flyer_next_target_index) =
         patrol_spawn_goal_and_next_index(&flyer_points, Vec3::new(0.0, 8.0, 0.0));
+
+    let spider_scene: Handle<Scene> = asset_server.load("Spider.glb#Scene0");
 
     let ground = commands
         .spawn((
@@ -81,11 +124,21 @@ fn spawn_nav_test_mobs(
                 points: ground_points,
                 next_target_index: ground_next_target_index,
             },
-            Mesh3d(meshes.add(Capsule3d::new(0.35, 0.7))),
-            MeshMaterial3d(materials.add(Color::srgb(0.85, 0.35, 0.3))),
             Transform::from_translation(ground_spawn),
         ))
         .id();
+    commands.entity(ground).with_children(|parent| {
+        parent.spawn((
+            Name::new("NavTestGroundVisual"),
+            NavTestGroundVisualRoot { owner: ground },
+            SceneRoot(spider_scene),
+            Transform {
+                translation: Vec3::new(0.0, NAV_TEST_GROUND_VISUAL_Y_OFFSET, 0.0),
+                rotation: Quat::from_rotation_y(NAV_TEST_GROUND_VISUAL_YAW_OFFSET),
+                ..default()
+            },
+        ));
+    });
 
     let flyer = commands
         .spawn((
@@ -181,5 +234,131 @@ fn sync_nav_goal_markers(
         if let Ok(goal) = goals.get(marker.tracked_entity) {
             transform.translation = goal.position + Vec3::Y * 0.2;
         }
+    }
+}
+
+fn face_nav_test_ground_toward_movement(
+    mut mobs: Query<(&LinearVelocity, &MobNavGoal, &mut Transform), With<NavTestGround>>,
+) {
+    for (velocity, goal, mut transform) in &mut mobs {
+        let mut direction = Vec3::new(velocity.x, 0.0, velocity.z);
+        if direction.length_squared() <= 0.0001 {
+            direction = goal.position - transform.translation;
+            direction.y = 0.0;
+        }
+
+        if direction.length_squared() <= 0.0001 {
+            continue;
+        }
+
+        transform.look_to(direction.normalize(), Vec3::Y);
+    }
+}
+
+fn init_nav_test_spider_leg_rig(
+    mut commands: Commands,
+    visual_roots: Query<(Entity, &NavTestGroundVisualRoot), Without<NavTestSpiderRigReady>>,
+    children_query: Query<&Children>,
+    names: Query<&Name>,
+    transforms: Query<&Transform>,
+    existing_leg_bones: Query<(), With<NavTestSpiderLegBone>>,
+) {
+    for (visual_root, visual_info) in &visual_roots {
+        let mut stack = vec![visual_root];
+        let mut matched_bones = 0usize;
+
+        while let Some(entity) = stack.pop() {
+            if let Ok(children) = children_query.get(entity) {
+                for child in children.iter() {
+                    stack.push(child);
+                }
+            }
+
+            let Ok(name) = names.get(entity) else {
+                continue;
+            };
+            let Some((joint, side_sign, phase_offset)) = spider_leg_bone_definition(name.as_str())
+            else {
+                continue;
+            };
+
+            if existing_leg_bones.contains(entity) {
+                matched_bones += 1;
+                continue;
+            }
+
+            let Ok(transform) = transforms.get(entity) else {
+                continue;
+            };
+
+            matched_bones += 1;
+            commands.entity(entity).insert((
+                NavTestSpiderLegBone {
+                    owner: visual_info.owner,
+                    side_sign,
+                    phase_offset,
+                    joint,
+                },
+                NavTestSpiderBindPose {
+                    local_rotation: transform.rotation,
+                },
+            ));
+        }
+
+        if matched_bones >= 8 {
+            commands.entity(visual_root).insert(NavTestSpiderRigReady);
+        }
+    }
+}
+
+fn animate_nav_test_spider_legs(
+    time: Res<Time>,
+    movers: Query<&LinearVelocity, With<NavTestGround>>,
+    mut leg_bones: Query<(&NavTestSpiderLegBone, &NavTestSpiderBindPose, &mut Transform)>,
+) {
+    let elapsed = time.elapsed_secs();
+
+    for (bone, bind_pose, mut transform) in &mut leg_bones {
+        let Ok(velocity) = movers.get(bone.owner) else {
+            continue;
+        };
+
+        let speed = Vec2::new(velocity.x, velocity.z).length();
+        if speed <= NAV_TEST_GAIT_SPEED_EPSILON {
+            transform.rotation = bind_pose.local_rotation;
+            continue;
+        }
+
+        let gait_weight = ((speed - NAV_TEST_GAIT_SPEED_EPSILON) / 2.0).clamp(0.0, 1.0);
+        let stride_frequency = NAV_TEST_GAIT_BASE_FREQ_HZ + speed * NAV_TEST_GAIT_FREQ_PER_SPEED_HZ;
+        let phase = elapsed * TAU * stride_frequency + bone.phase_offset;
+
+        let delta = match bone.joint {
+            SpiderLegJoint::Hip => {
+                let swing = phase.sin() * NAV_TEST_GAIT_HIP_SWING * gait_weight;
+                let lift = phase.cos().max(0.0) * NAV_TEST_GAIT_HIP_LIFT * gait_weight;
+                Quat::from_euler(EulerRot::XYZ, lift, 0.0, bone.side_sign * swing)
+            }
+            SpiderLegJoint::Knee => {
+                let bend = ((phase.sin() + 1.0) * 0.5) * NAV_TEST_GAIT_KNEE_BEND * gait_weight;
+                Quat::from_rotation_x(-bend)
+            }
+        };
+
+        transform.rotation = bind_pose.local_rotation * delta;
+    }
+}
+
+fn spider_leg_bone_definition(name: &str) -> Option<(SpiderLegJoint, f32, f32)> {
+    match name {
+        "Bone.003.L" => Some((SpiderLegJoint::Hip, -1.0, 0.0)),
+        "Bone.002.L" => Some((SpiderLegJoint::Knee, -1.0, 0.0)),
+        "Bone.003.R" => Some((SpiderLegJoint::Hip, 1.0, 0.0)),
+        "Bone.002.R" => Some((SpiderLegJoint::Knee, 1.0, 0.0)),
+        "Bone.008.L" => Some((SpiderLegJoint::Hip, -1.0, PI)),
+        "Bone.005.L" => Some((SpiderLegJoint::Knee, -1.0, PI)),
+        "Bone.008.R" => Some((SpiderLegJoint::Hip, 1.0, PI)),
+        "Bone.005.R" => Some((SpiderLegJoint::Knee, 1.0, PI)),
+        _ => None,
     }
 }
