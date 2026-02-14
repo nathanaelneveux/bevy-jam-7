@@ -2,11 +2,12 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use std::f32::consts::PI;
 
-const EXPERIMENT_MODEL_Y: f32 = 1.5;
+const EXPERIMENT_MODEL_X: f32 = -2.0;
+const EXPERIMENT_MODEL_Y: f32 = -5.0;
 const EXPERIMENT_VISUAL_Y_OFFSET: f32 = -0.5;
 const EXPERIMENT_VISUAL_YAW_OFFSET: f32 = PI;
-const FOOT_RAY_ORIGIN_UP: f32 = 0.6;
-const FOOT_RAY_DISTANCE: f32 = 2.4;
+const FOOT_RAY_ORIGIN_UP: f32 = 1.0;
+const FOOT_RAY_DISTANCE: f32 = 3.0;
 
 pub struct SpiderQueryExperimentPlugin;
 
@@ -49,7 +50,7 @@ fn spawn_spider_query_experiment(mut commands: Commands, asset_server: Res<Asset
         .spawn((
             Name::new("SpiderQueryExperiment"),
             ExperimentSpider,
-            Transform::from_xyz(0.0, EXPERIMENT_MODEL_Y, 0.0),
+            Transform::from_xyz(EXPERIMENT_MODEL_X, EXPERIMENT_MODEL_Y, 0.0),
         ))
         .id();
 
