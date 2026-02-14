@@ -65,6 +65,7 @@ struct ExperimentSpiderLegRig {
     knee_bind_rotation: Quat,
     hip_rest_dir_parent_space: Vec3,
     knee_rest_dir_parent_space: Vec3,
+    foot_rest_owner_space: Vec3,
 }
 
 #[derive(Component, Reflect, Clone, Copy, Debug)]
@@ -241,6 +242,10 @@ fn init_spider_leg_rig(
     for (visual_root, visual_info) in &visual_roots {
         let mut stack = vec![visual_root];
         let mut leg_matches = [SpiderRigLegMatch::default(); 4];
+        let Ok(owner_global_transform) = global_transforms.get(visual_info.owner) else {
+            continue;
+        };
+        let owner_inverse_affine = owner_global_transform.affine().inverse();
 
         while let Some(entity) = stack.pop() {
             if let Ok(children) = children_query.get(entity) {
@@ -319,6 +324,8 @@ fn init_spider_leg_rig(
                 knee_local_transform.rotation * knee_to_foot_local,
                 Vec3::NEG_Y,
             );
+            let foot_rest_owner_space =
+                owner_inverse_affine.transform_point3(foot_global_transform.translation());
 
             commands.entity(hip).insert(ExperimentSpiderLegRig {
                 owner: visual_info.owner,
@@ -334,6 +341,7 @@ fn init_spider_leg_rig(
                 knee_bind_rotation: knee_local_transform.rotation,
                 hip_rest_dir_parent_space,
                 knee_rest_dir_parent_space,
+                foot_rest_owner_space,
             });
         }
 
@@ -373,11 +381,18 @@ fn solve_spider_two_bone_ik(
         let leg_color = spider_leg_color(rig.leg);
         let hip_world = hip_global_transform.translation();
         let foot_world = foot_global_transform.translation();
-        let ray_origin = foot_world + Vec3::Y * settings.ray_origin_up;
+        let ray_anchor_world = spider_global_transform.transform_point(rig.foot_rest_owner_space);
+        let ray_origin = ray_anchor_world + Vec3::Y * settings.ray_origin_up;
         let ray_end = ray_origin + Vec3::NEG_Y * settings.ray_distance;
 
         if settings.draw_gizmos {
             gizmos.line(ray_origin, ray_end, leg_color);
+            draw_cross_marker(
+                &mut gizmos,
+                ray_anchor_world,
+                settings.gizmo_marker_size,
+                leg_color,
+            );
             gizmos.line(
                 hip_world,
                 knee_global_transform.translation(),
@@ -398,6 +413,12 @@ fn solve_spider_two_bone_ik(
             true,
             &filter,
         ) else {
+            if let Ok([mut hip_local_transform, mut knee_local_transform]) =
+                local_transforms.get_many_mut([rig.hip, rig.knee])
+            {
+                hip_local_transform.rotation = rig.hip_bind_rotation;
+                knee_local_transform.rotation = rig.knee_bind_rotation;
+            }
             continue;
         };
 
