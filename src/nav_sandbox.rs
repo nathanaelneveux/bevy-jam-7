@@ -25,14 +25,18 @@ const NAV_TEST_IK_SWING_LIFT: f32 = 0.22;
 const NAV_TEST_IK_KNEE_GAIN: f32 = 1.6;
 const NAV_TEST_IK_KNEE_MAX_DELTA: f32 = 0.55;
 const NAV_TEST_BODY_TURN_SPEED_RAD_PER_SEC: f32 = 5.0;
+const NAV_TEST_WALK_ANIMATION_TOGGLE_KEY: KeyCode = KeyCode::F6;
 
 pub struct NavSandboxPlugin;
 
 impl Plugin for NavSandboxPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_nav_test_mobs).add_systems(
+        app.init_resource::<NavTestAnimationDebugSettings>()
+            .add_systems(Startup, spawn_nav_test_mobs)
+            .add_systems(
             Update,
             (
+                toggle_nav_test_walk_animation,
                 retry_blocked_nav_test_mobs
                     .after(MobNavUpdateSet::ApplyResults)
                     .run_if(on_timer(Duration::from_secs_f32(0.75))),
@@ -43,6 +47,19 @@ impl Plugin for NavSandboxPlugin {
                 sync_nav_goal_markers,
             ),
         );
+    }
+}
+
+#[derive(Resource)]
+struct NavTestAnimationDebugSettings {
+    walk_animation_enabled: bool,
+}
+
+impl Default for NavTestAnimationDebugSettings {
+    fn default() -> Self {
+        Self {
+            walk_animation_enabled: true,
+        }
     }
 }
 
@@ -232,6 +249,24 @@ fn retry_blocked_nav_test_mobs(
     }
 }
 
+fn toggle_nav_test_walk_animation(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut settings: ResMut<NavTestAnimationDebugSettings>,
+) {
+    if keys.just_pressed(NAV_TEST_WALK_ANIMATION_TOGGLE_KEY) {
+        settings.walk_animation_enabled = !settings.walk_animation_enabled;
+        info!(
+            "Nav test walk animation: {} (toggle key: {:?})",
+            if settings.walk_animation_enabled {
+                "enabled"
+            } else {
+                "disabled"
+            },
+            NAV_TEST_WALK_ANIMATION_TOGGLE_KEY
+        );
+    }
+}
+
 fn advance_nav_test_patrols(mut mobs: Query<(&MobNavStatus, &mut MobNavGoal, &mut NavTestPatrol)>) {
     for (status, mut goal, mut patrol) in &mut mobs {
         if *status != MobNavStatus::Arrived {
@@ -374,6 +409,7 @@ fn init_nav_test_spider_leg_rig(
 fn animate_nav_test_spider_legs(
     time: Res<Time>,
     spatial_query: SpatialQuery,
+    settings: Res<NavTestAnimationDebugSettings>,
     movers: Query<&LinearVelocity, With<NavTestGround>>,
     foot_bones: Query<(&NavTestSpiderFootBone, &GlobalTransform)>,
     mut leg_bones: Query<(&NavTestSpiderLegBone, &NavTestSpiderBindPose, &mut Transform)>,
@@ -386,13 +422,27 @@ fn animate_nav_test_spider_legs(
         };
 
         let speed = Vec2::new(velocity.x, velocity.z).length();
-        if speed <= NAV_TEST_GAIT_SPEED_EPSILON {
+        if settings.walk_animation_enabled && speed <= NAV_TEST_GAIT_SPEED_EPSILON {
             transform.rotation = bind_pose.local_rotation;
             continue;
         }
 
-        let gait_weight = ((speed - NAV_TEST_GAIT_SPEED_EPSILON) / 2.0).clamp(0.0, 1.0);
-        let stride_frequency = NAV_TEST_GAIT_BASE_FREQ_HZ + speed * NAV_TEST_GAIT_FREQ_PER_SPEED_HZ;
+        let walk_speed = if settings.walk_animation_enabled {
+            speed
+        } else {
+            0.0
+        };
+        let gait_weight = if settings.walk_animation_enabled {
+            ((speed - NAV_TEST_GAIT_SPEED_EPSILON) / 2.0).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let ik_weight = if settings.walk_animation_enabled {
+            gait_weight
+        } else {
+            1.0
+        };
+        let stride_frequency = NAV_TEST_GAIT_BASE_FREQ_HZ + walk_speed * NAV_TEST_GAIT_FREQ_PER_SPEED_HZ;
         let phase = elapsed * TAU * stride_frequency + bone.phase_offset;
         let delta = match bone.joint {
             SpiderLegJoint::Hip => {
@@ -404,11 +454,12 @@ fn animate_nav_test_spider_legs(
                 let knee_ik_delta = sample_knee_ik_delta(
                     bone.owner,
                     bone.leg,
-                    speed,
+                    walk_speed,
                     elapsed,
+                    settings.walk_animation_enabled,
                     &spatial_query,
                     &foot_bones,
-                ) * gait_weight;
+                ) * ik_weight;
                 let base_bend = ((phase.sin() + 1.0) * 0.5) * NAV_TEST_GAIT_KNEE_BEND * gait_weight;
                 let bend =
                     (base_bend + knee_ik_delta).clamp(0.0, NAV_TEST_GAIT_KNEE_BEND + NAV_TEST_IK_KNEE_MAX_DELTA);
@@ -425,6 +476,7 @@ fn sample_knee_ik_delta(
     leg: SpiderLegId,
     speed: f32,
     elapsed: f32,
+    walk_animation_enabled: bool,
     spatial_query: &SpatialQuery,
     foot_bones: &Query<(&NavTestSpiderFootBone, &GlobalTransform)>,
 ) -> f32 {
@@ -437,7 +489,11 @@ fn sample_knee_ik_delta(
 
     let stride_frequency = NAV_TEST_GAIT_BASE_FREQ_HZ + speed * NAV_TEST_GAIT_FREQ_PER_SPEED_HZ;
     let phase = elapsed * TAU * stride_frequency + foot_bone.phase_offset;
-    let swing_lift = phase.sin().max(0.0) * NAV_TEST_IK_SWING_LIFT;
+    let swing_lift = if walk_animation_enabled {
+        phase.sin().max(0.0) * NAV_TEST_IK_SWING_LIFT
+    } else {
+        0.0
+    };
 
     let foot_world = foot_global_transform.translation();
     let ray_origin = foot_world + Vec3::Y * NAV_TEST_IK_FOOT_RAY_ORIGIN_UP;
