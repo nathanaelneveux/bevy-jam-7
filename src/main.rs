@@ -5,6 +5,7 @@ mod mob_nav;
 mod mob_nav_northstar;
 mod nav_sandbox;
 mod player_controller;
+mod spider_query_experiment;
 
 use avian3d::prelude::*;
 use bevy::asset::AssetMetaCheck;
@@ -19,6 +20,7 @@ use mob_nav::MobNavPlugin;
 use mob_nav_northstar::MobNavNorthstarPlugin;
 use nav_sandbox::NavSandboxPlugin;
 use player_controller::PlayerControllerPlugin;
+use spider_query_experiment::SpiderQueryExperimentPlugin;
 
 #[derive(Resource, Default)]
 pub(crate) struct InspectorMode {
@@ -43,6 +45,7 @@ fn main() {
         .add_plugins(MobNavPlugin)
         .add_plugins(MobNavNorthstarPlugin)
         .add_plugins(NavSandboxPlugin)
+        .add_plugins(SpiderQueryExperimentPlugin)
         .add_systems(Update, toggle_inspector_mode)
         .add_systems(Startup, setup)
         .run();
