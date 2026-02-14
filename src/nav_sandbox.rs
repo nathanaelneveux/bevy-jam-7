@@ -8,10 +8,10 @@ use crate::mob_nav::{
     MobNavAgent, MobNavGoal, MobNavMovementMode, MobNavRepath, MobNavStatus, MobNavUpdateSet,
 };
 
-const NAV_TEST_GROUND_VISUAL_Y_OFFSET: f32 = -1.05;
+const NAV_TEST_GROUND_VISUAL_Y_OFFSET: f32 = -0.5;
 const NAV_TEST_GROUND_VISUAL_YAW_OFFSET: f32 = PI;
-const NAV_TEST_GAIT_BASE_FREQ_HZ: f32 = 2.4;
-const NAV_TEST_GAIT_FREQ_PER_SPEED_HZ: f32 = 0.35;
+const NAV_TEST_GAIT_BASE_FREQ_HZ: f32 = 1.3;
+const NAV_TEST_GAIT_FREQ_PER_SPEED_HZ: f32 = 0.18;
 const NAV_TEST_GAIT_SPEED_EPSILON: f32 = 0.1;
 const NAV_TEST_GAIT_HIP_SWING: f32 = 0.32;
 const NAV_TEST_GAIT_HIP_LIFT: f32 = 0.16;
@@ -24,6 +24,7 @@ const NAV_TEST_IK_STANCE_CLEARANCE: f32 = 0.05;
 const NAV_TEST_IK_SWING_LIFT: f32 = 0.22;
 const NAV_TEST_IK_KNEE_GAIN: f32 = 1.6;
 const NAV_TEST_IK_KNEE_MAX_DELTA: f32 = 0.55;
+const NAV_TEST_BODY_TURN_SPEED_RAD_PER_SEC: f32 = 5.0;
 
 pub struct NavSandboxPlugin;
 
@@ -276,6 +277,7 @@ fn sync_nav_goal_markers(
 }
 
 fn face_nav_test_ground_toward_movement(
+    time: Res<Time>,
     mut mobs: Query<(&LinearVelocity, &MobNavGoal, &mut Transform), With<NavTestGround>>,
 ) {
     for (velocity, goal, mut transform) in &mut mobs {
@@ -289,7 +291,11 @@ fn face_nav_test_ground_toward_movement(
             continue;
         }
 
-        transform.look_to(direction.normalize(), Vec3::Y);
+        let target_rotation = Transform::default()
+            .looking_to(direction.normalize(), Vec3::Y)
+            .rotation;
+        let turn_lerp = (NAV_TEST_BODY_TURN_SPEED_RAD_PER_SEC * time.delta_secs()).clamp(0.0, 1.0);
+        transform.rotation = transform.rotation.slerp(target_rotation, turn_lerp);
     }
 }
 
