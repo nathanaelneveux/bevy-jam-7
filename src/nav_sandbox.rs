@@ -5,10 +5,11 @@ use std::f32::consts::PI;
 use std::time::Duration;
 
 use crate::{
+    ground_ik::GroundedTwoBoneIkOwner,
     mob_nav::{
         MobNavAgent, MobNavGoal, MobNavMovementMode, MobNavRepath, MobNavStatus, MobNavUpdateSet,
     },
-    spider_query_experiment::{ExperimentSpiderVisualRoot, GroundedTwoBoneIkOwner},
+    spider_query_experiment::ExperimentSpiderVisualRoot,
 };
 
 const NAV_TEST_GROUND_VISUAL_Y_OFFSET: f32 = -0.5;
