@@ -7,6 +7,7 @@ use crate::ground_ik::{
     GroundIkSet, GroundedTwoBoneIkLegInit, GroundedTwoBoneIkOwner, GroundedTwoBoneIkRig,
     init_leg_rigs,
 };
+use crate::ground_ik_walk::GroundedTwoBoneIkWalk;
 
 const EXPERIMENT_MODEL_X: f32 = -2.0;
 const EXPERIMENT_MODEL_Y: f32 = -5.0;
@@ -69,6 +70,7 @@ fn spawn_spider_query_experiment(mut commands: Commands, asset_server: Res<Asset
         .spawn((
             Name::new("SpiderQueryExperiment"),
             GroundedTwoBoneIkOwner,
+            GroundedTwoBoneIkWalk,
             Transform::from_xyz(EXPERIMENT_MODEL_X, EXPERIMENT_MODEL_Y, 0.0),
         ))
         .id();

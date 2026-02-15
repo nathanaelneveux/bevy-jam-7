@@ -4,6 +4,7 @@
 //! - `GroundedTwoBoneIkOwner`: marks an entity as a grounded IK owner.
 //! - `GroundedTwoBoneIkSettings`: runtime tuning for grounded target acquisition.
 //! - `GroundedTwoBoneIkRig`: per-leg runtime data consumed by the solve pass.
+//! - `GroundedTwoBoneIkTargetOverride`: optional per-leg world target override.
 //! - `GroundedTwoBoneIkLegInit`: generic one-leg init descriptor.
 //! - `init_leg_rigs`: generic rig initializer that computes rest data and inserts rigs.
 //! - `solve_two_bone_ik`: pure geometric two-bone solver used by grounded IK.
@@ -88,6 +89,15 @@ pub(crate) struct GroundedTwoBoneIkRig {
     pub(crate) knee_rest_dir_parent_space: Vec3,
     /// Foot rest position in owner-local space used as grounded ray anchor.
     pub(crate) foot_rest_owner_space: Vec3,
+}
+
+#[derive(Component, Clone, Copy, Debug)]
+/// Optional world-space foot target override for one leg rig.
+///
+/// Insert on the leg rig entity (typically the hip). When present, the grounded
+/// solve uses this target instead of acquiring one from a downward raycast.
+pub(crate) struct GroundedTwoBoneIkTargetOverride {
+    pub(crate) world_target: Vec3,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -307,6 +317,30 @@ fn sanitize_grounded_two_bone_ik_settings(
     }
 }
 
+/// Acquires a grounded target for a leg via downward raycast from its owner-space
+/// rest anchor, using the provided grounded IK settings.
+pub(crate) fn sample_ground_target(
+    spatial_query: &SpatialQuery,
+    owner: Entity,
+    owner_global_transform: &GlobalTransform,
+    rig: &GroundedTwoBoneIkRig,
+    settings: &GroundedTwoBoneIkSettings,
+) -> Option<Vec3> {
+    let settings = settings.sanitize();
+    let ray_anchor_world = owner_global_transform.transform_point(rig.foot_rest_owner_space);
+    let ray_origin = ray_anchor_world + Vec3::Y * settings.ray_origin_up;
+    let filter = SpatialQueryFilter::from_excluded_entities([owner]);
+    let hit = spatial_query.cast_ray(
+        ray_origin,
+        Dir3::NEG_Y,
+        settings.ray_distance,
+        true,
+        &filter,
+    )?;
+    let hit_point = ray_origin + Vec3::NEG_Y * hit.distance;
+    Some(hit_point + Vec3::Y * settings.target_foot_offset)
+}
+
 /// Grounded solve pass:
 /// - raycasts down from each leg's owner-space rest anchor
 /// - builds a world-space target and pole point
@@ -318,6 +352,7 @@ fn solve_grounded_two_bone_ik(
     mut gizmos: Gizmos,
     owners: Query<(&GroundedTwoBoneIkSettings, &GlobalTransform), With<GroundedTwoBoneIkOwner>>,
     rigs: Query<&GroundedTwoBoneIkRig>,
+    target_overrides: Query<&GroundedTwoBoneIkTargetOverride>,
     global_transforms: Query<&GlobalTransform>,
     mut local_transforms: Query<&mut Transform>,
 ) {
@@ -367,25 +402,28 @@ fn solve_grounded_two_bone_ik(
             );
         }
 
-        let filter = SpatialQueryFilter::from_excluded_entities([rig.owner]);
-        let Some(hit) = spatial_query.cast_ray(
-            ray_origin,
-            Dir3::NEG_Y,
-            settings.ray_distance,
-            true,
-            &filter,
-        ) else {
-            if let Ok([mut hip_local_transform, mut knee_local_transform]) =
-                local_transforms.get_many_mut([rig.hip, rig.knee])
-            {
-                hip_local_transform.rotation = rig.hip_bind_rotation;
-                knee_local_transform.rotation = rig.knee_bind_rotation;
-            }
-            continue;
+        let mut hit_point = None;
+        let target = if let Ok(target_override) = target_overrides.get(rig.hip) {
+            target_override.world_target
+        } else {
+            let Some(target) = sample_ground_target(
+                &spatial_query,
+                rig.owner,
+                owner_global_transform,
+                rig,
+                &settings,
+            ) else {
+                if let Ok([mut hip_local_transform, mut knee_local_transform]) =
+                    local_transforms.get_many_mut([rig.hip, rig.knee])
+                {
+                    hip_local_transform.rotation = rig.hip_bind_rotation;
+                    knee_local_transform.rotation = rig.knee_bind_rotation;
+                }
+                continue;
+            };
+            hit_point = Some(target - Vec3::Y * settings.target_foot_offset);
+            target
         };
-
-        let hit_point = ray_origin + Vec3::NEG_Y * hit.distance;
-        let target = hit_point + Vec3::Y * settings.target_foot_offset;
         let owner_rotation = owner_global_transform.rotation();
         let pole_point = hip_world
             + owner_rotation
@@ -444,15 +482,17 @@ fn solve_grounded_two_bone_ik(
             } else {
                 Color::WHITE
             };
-            gizmos.line(foot_world, hit_point, Color::srgb(0.7, 0.7, 0.7));
+            if let Some(hit_point) = hit_point {
+                gizmos.line(foot_world, hit_point, Color::srgb(0.7, 0.7, 0.7));
+                draw_cross_marker(
+                    &mut gizmos,
+                    hit_point,
+                    settings.gizmo_marker_size,
+                    Color::srgb(0.8, 0.8, 0.8),
+                );
+            }
             gizmos.line(hip_world, solution.knee, solved_color);
             gizmos.line(solution.knee, solution.target, solved_color);
-            draw_cross_marker(
-                &mut gizmos,
-                hit_point,
-                settings.gizmo_marker_size,
-                Color::srgb(0.8, 0.8, 0.8),
-            );
             draw_cross_marker(
                 &mut gizmos,
                 solution.target,

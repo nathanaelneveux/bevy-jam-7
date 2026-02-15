@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use crate::{
     ground_ik::GroundedTwoBoneIkOwner,
+    ground_ik_walk::GroundedTwoBoneIkWalk,
     mob_nav::{
         MobNavAgent, MobNavGoal, MobNavMovementMode, MobNavRepath, MobNavStatus, MobNavUpdateSet,
     },
@@ -95,6 +96,7 @@ fn spawn_nav_test_mobs(
                 next_target_index: ground_next_target_index,
             },
             GroundedTwoBoneIkOwner,
+            GroundedTwoBoneIkWalk,
             Transform::from_translation(ground_spawn),
         ))
         .id();

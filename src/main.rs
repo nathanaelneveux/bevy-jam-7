@@ -2,6 +2,7 @@ mod cave_noise;
 mod cave_world;
 mod chunk_colliders;
 mod ground_ik;
+mod ground_ik_walk;
 mod mob_nav;
 mod mob_nav_northstar;
 mod nav_sandbox;
@@ -18,6 +19,7 @@ use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
 use cave_world::CaveWorldPlugin;
 use chunk_colliders::ChunkColliderPlugin;
 use ground_ik::GroundIkPlugin;
+use ground_ik_walk::GroundIkWalkPlugin;
 use mob_nav::MobNavPlugin;
 use mob_nav_northstar::MobNavNorthstarPlugin;
 use nav_sandbox::NavSandboxPlugin;
@@ -47,6 +49,7 @@ fn main() {
         .add_plugins(MobNavPlugin)
         .add_plugins(MobNavNorthstarPlugin)
         .add_plugins(GroundIkPlugin)
+        .add_plugins(GroundIkWalkPlugin)
         .add_plugins(NavSandboxPlugin)
         .add_plugins(SpiderQueryExperimentPlugin)
         .add_systems(Update, toggle_inspector_mode)
