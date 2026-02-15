@@ -1,3 +1,15 @@
+//! Grounded two-bone IK experiment module.
+//!
+//! Generic path:
+//! - `GroundedTwoBoneIkOwner`: marks an entity as a grounded IK owner.
+//! - `GroundedTwoBoneIkSettings`: runtime tuning parameters for grounded target acquisition.
+//! - `GroundedTwoBoneIkRig`: per-leg runtime data consumed by the grounded solve pass.
+//! - `solve_two_bone_ik`: pure geometric two-bone solver used by the grounded pass.
+//!
+//! Spider-specific path:
+//! - `init_spider_leg_rig` discovers the spider model's bones and produces
+//!   `GroundedTwoBoneIkRig` components.
+
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use std::f32::consts::PI;
@@ -41,6 +53,10 @@ impl Plugin for SpiderQueryExperimentPlugin {
 
 #[derive(Component)]
 #[require(GroundedTwoBoneIkSettings)]
+/// Marks an entity as an owner for grounded two-bone IK.
+///
+/// Inserting this component automatically inserts `GroundedTwoBoneIkSettings`
+/// via required components.
 pub(crate) struct GroundedTwoBoneIkOwner;
 
 #[derive(Component)]
@@ -52,25 +68,41 @@ pub(crate) struct ExperimentSpiderVisualRoot {
 struct ExperimentRigReady;
 
 #[derive(Component, Clone, Copy, Debug)]
+/// Internal runtime rig data for one two-bone leg chain.
 struct GroundedTwoBoneIkRig {
+    /// Entity that owns this leg rig and provides grounded IK settings.
     owner: Entity,
+    /// Debug gizmo color for this leg.
     debug_color: Color,
+    /// Per-leg lateral sign used when building the pole point from settings.
     side_sign: f32,
+    /// Per-leg forward sign used when building the pole point from settings.
     fore_sign: f32,
+    /// Upper-joint entity (root joint of the two-bone chain).
     hip: Entity,
+    /// Middle-joint entity.
     knee: Entity,
+    /// End-effector entity for this leg.
     foot: Entity,
+    /// World-space rest length from hip to knee.
     upper_len: f32,
+    /// World-space rest length from knee to foot.
     lower_len: f32,
+    /// Hip local rotation captured at bind/rest pose.
     hip_bind_rotation: Quat,
+    /// Knee local rotation captured at bind/rest pose.
     knee_bind_rotation: Quat,
+    /// Hip rest direction in the hip parent space.
     hip_rest_dir_parent_space: Vec3,
+    /// Knee rest direction in the knee parent space.
     knee_rest_dir_parent_space: Vec3,
+    /// Foot rest position in owner-local space used as grounded ray anchor.
     foot_rest_owner_space: Vec3,
 }
 
 #[derive(Component, Reflect, Clone, Copy, Debug)]
 #[reflect(Component)]
+/// Tunable settings for grounded two-bone IK target acquisition and debug draw.
 pub(crate) struct GroundedTwoBoneIkSettings {
     /// Enable/disable the grounded IK pass for this owner.
     enabled: bool,
@@ -183,6 +215,7 @@ struct SpiderRigLegMatch {
 }
 
 #[derive(Clone, Copy)]
+/// Result of solving a two-bone chain in world-space.
 struct TwoBoneIkSolution {
     target: Vec3,
     knee: Vec3,
@@ -352,6 +385,12 @@ fn init_spider_leg_rig(
     }
 }
 
+/// Grounded solve pass:
+/// - raycasts down from each leg's owner-space rest anchor
+/// - builds a world-space target and pole point
+/// - runs `solve_two_bone_ik`
+/// - applies solved hip/knee local rotations
+/// - optionally draws debug gizmos
 fn solve_grounded_two_bone_ik(
     spatial_query: SpatialQuery,
     mut gizmos: Gizmos,
@@ -512,6 +551,13 @@ fn solve_grounded_two_bone_ik(
     }
 }
 
+/// Solves a two-bone chain in world-space against a target and pole hint.
+///
+/// The target distance is clamped to a stable reachable range:
+/// - minimum reach: `abs(upper_len - lower_len) + epsilon`
+/// - maximum reach: `(upper_len + lower_len) * max_reach_ratio`
+///
+/// Returns the clamped target and the solved knee position.
 fn solve_two_bone_ik(
     hip: Vec3,
     target: Vec3,
