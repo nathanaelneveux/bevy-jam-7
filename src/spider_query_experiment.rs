@@ -3,13 +3,15 @@
 use bevy::prelude::*;
 use std::f32::consts::PI;
 
-use crate::ground_ik::{GroundIkSet, GroundedTwoBoneIkOwner, GroundedTwoBoneIkRig};
+use crate::ground_ik::{
+    GroundIkSet, GroundedTwoBoneIkLegInit, GroundedTwoBoneIkOwner, GroundedTwoBoneIkRig,
+    init_leg_rigs,
+};
 
 const EXPERIMENT_MODEL_X: f32 = -2.0;
 const EXPERIMENT_MODEL_Y: f32 = -5.0;
 const EXPERIMENT_VISUAL_Y_OFFSET: f32 = -0.5;
 const EXPERIMENT_VISUAL_YAW_OFFSET: f32 = PI;
-const SPIDER_RIG_EPSILON: f32 = 0.0001;
 
 pub struct SpiderQueryExperimentPlugin;
 
@@ -97,10 +99,6 @@ fn init_spider_leg_rig(
     for (visual_root, visual_info) in &visual_roots {
         let mut stack = vec![visual_root];
         let mut leg_matches = [SpiderRigLegMatch::default(); 4];
-        let Ok(owner_global_transform) = global_transforms.get(visual_info.owner) else {
-            continue;
-        };
-        let owner_inverse_affine = owner_global_transform.affine().inverse();
 
         while let Some(entity) = stack.pop() {
             if let Ok(children) = children_query.get(entity) {
@@ -129,6 +127,7 @@ fn init_spider_leg_rig(
         }
 
         let mut complete_leg_count = 0usize;
+        let mut leg_inits = Vec::new();
         for (index, rig_match) in leg_matches.iter().enumerate() {
             let (Some(hip), Some(knee), Some(foot)) =
                 (rig_match.hip, rig_match.knee, rig_match.foot)
@@ -136,83 +135,29 @@ fn init_spider_leg_rig(
                 continue;
             };
             complete_leg_count += 1;
-
-            if existing_leg_rigs.contains(hip) {
-                continue;
-            }
-
-            let Ok(hip_local_transform) = local_transforms.get(hip) else {
-                continue;
-            };
-            let Ok(knee_local_transform) = local_transforms.get(knee) else {
-                continue;
-            };
-            let Ok(foot_local_transform) = local_transforms.get(foot) else {
-                continue;
-            };
-            let Ok(hip_global_transform) = global_transforms.get(hip) else {
-                continue;
-            };
-            let Ok(knee_global_transform) = global_transforms.get(knee) else {
-                continue;
-            };
-            let Ok(foot_global_transform) = global_transforms.get(foot) else {
-                continue;
-            };
-
-            let upper_len = hip_global_transform
-                .translation()
-                .distance(knee_global_transform.translation())
-                .max(SPIDER_RIG_EPSILON);
-            let lower_len = knee_global_transform
-                .translation()
-                .distance(foot_global_transform.translation())
-                .max(SPIDER_RIG_EPSILON);
-
-            let hip_to_knee_local = safe_normalize(knee_local_transform.translation, Vec3::Y);
-            let knee_to_foot_local = safe_normalize(foot_local_transform.translation, Vec3::Y);
-            let hip_rest_dir_parent_space = safe_normalize(
-                hip_local_transform.rotation * hip_to_knee_local,
-                Vec3::NEG_Y,
-            );
-            let knee_rest_dir_parent_space = safe_normalize(
-                knee_local_transform.rotation * knee_to_foot_local,
-                Vec3::NEG_Y,
-            );
-            let foot_rest_owner_space =
-                owner_inverse_affine.transform_point3(foot_global_transform.translation());
             let leg = spider_leg_from_index(index);
-
-            commands.entity(hip).insert(GroundedTwoBoneIkRig {
-                owner: visual_info.owner,
+            leg_inits.push(GroundedTwoBoneIkLegInit {
                 debug_color: spider_leg_debug_color(leg),
                 side_sign: rig_match.side_sign,
                 fore_sign: rig_match.fore_sign,
                 hip,
                 knee,
                 foot,
-                upper_len,
-                lower_len,
-                hip_bind_rotation: hip_local_transform.rotation,
-                knee_bind_rotation: knee_local_transform.rotation,
-                hip_rest_dir_parent_space,
-                knee_rest_dir_parent_space,
-                foot_rest_owner_space,
             });
         }
+
+        init_leg_rigs(
+            &mut commands,
+            visual_info.owner,
+            leg_inits,
+            &local_transforms,
+            &global_transforms,
+            &existing_leg_rigs,
+        );
 
         if complete_leg_count == 4 {
             commands.entity(visual_root).insert(ExperimentRigReady);
         }
-    }
-}
-
-fn safe_normalize(input: Vec3, fallback: Vec3) -> Vec3 {
-    let normalized = input.normalize_or_zero();
-    if normalized.length_squared() > SPIDER_RIG_EPSILON {
-        normalized
-    } else {
-        fallback.normalize_or_zero()
     }
 }
 

@@ -4,6 +4,8 @@
 //! - `GroundedTwoBoneIkOwner`: marks an entity as a grounded IK owner.
 //! - `GroundedTwoBoneIkSettings`: runtime tuning for grounded target acquisition.
 //! - `GroundedTwoBoneIkRig`: per-leg runtime data consumed by the solve pass.
+//! - `GroundedTwoBoneIkLegInit`: generic one-leg init descriptor.
+//! - `init_leg_rigs`: generic rig initializer that computes rest data and inserts rigs.
 //! - `solve_two_bone_ik`: pure geometric two-bone solver used by grounded IK.
 
 use avian3d::prelude::*;
@@ -86,6 +88,117 @@ pub(crate) struct GroundedTwoBoneIkRig {
     pub(crate) knee_rest_dir_parent_space: Vec3,
     /// Foot rest position in owner-local space used as grounded ray anchor.
     pub(crate) foot_rest_owner_space: Vec3,
+}
+
+#[derive(Clone, Copy, Debug)]
+/// Generic init data for one grounded two-bone leg.
+pub(crate) struct GroundedTwoBoneIkLegInit {
+    /// Debug gizmo color for this leg.
+    pub(crate) debug_color: Color,
+    /// Per-leg lateral sign used when building the pole point from settings.
+    pub(crate) side_sign: f32,
+    /// Per-leg forward sign used when building the pole point from settings.
+    pub(crate) fore_sign: f32,
+    /// Upper-joint entity (root joint of the two-bone chain).
+    pub(crate) hip: Entity,
+    /// Middle-joint entity.
+    pub(crate) knee: Entity,
+    /// End-effector entity.
+    pub(crate) foot: Entity,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+/// Summary for one `init_leg_rigs` call.
+pub(crate) struct GroundedTwoBoneIkInitSummary {
+    /// Count of leg descriptors provided to the initializer.
+    pub(crate) requested_count: usize,
+    /// Count of rigs inserted this run.
+    pub(crate) inserted_count: usize,
+    /// Count skipped because a rig already exists on the hip entity.
+    pub(crate) skipped_existing_count: usize,
+    /// Count skipped due to missing transforms on owner/leg entities.
+    pub(crate) skipped_missing_transform_count: usize,
+}
+
+/// Initializes grounded IK rigs from generic leg descriptors.
+///
+/// The rig component is inserted on each leg's hip entity.
+pub(crate) fn init_leg_rigs<I>(
+    commands: &mut Commands,
+    owner: Entity,
+    leg_inits: I,
+    local_transforms: &Query<&Transform>,
+    global_transforms: &Query<&GlobalTransform>,
+    existing_leg_rigs: &Query<(), With<GroundedTwoBoneIkRig>>,
+) -> GroundedTwoBoneIkInitSummary
+where
+    I: IntoIterator<Item = GroundedTwoBoneIkLegInit>,
+{
+    let mut summary = GroundedTwoBoneIkInitSummary::default();
+    let Ok(owner_global_transform) = global_transforms.get(owner) else {
+        return summary;
+    };
+    let owner_inverse_affine = owner_global_transform.affine().inverse();
+
+    for leg in leg_inits {
+        summary.requested_count += 1;
+
+        if existing_leg_rigs.contains(leg.hip) {
+            summary.skipped_existing_count += 1;
+            continue;
+        }
+
+        let Ok([hip_local_transform, knee_local_transform, foot_local_transform]) =
+            local_transforms.get_many([leg.hip, leg.knee, leg.foot])
+        else {
+            summary.skipped_missing_transform_count += 1;
+            continue;
+        };
+        let Ok([hip_global_transform, knee_global_transform, foot_global_transform]) =
+            global_transforms.get_many([leg.hip, leg.knee, leg.foot])
+        else {
+            summary.skipped_missing_transform_count += 1;
+            continue;
+        };
+
+        let upper_len = hip_global_transform
+            .translation()
+            .distance(knee_global_transform.translation())
+            .max(IK_SOLVER_EPSILON);
+        let lower_len = knee_global_transform
+            .translation()
+            .distance(foot_global_transform.translation())
+            .max(IK_SOLVER_EPSILON);
+
+        let hip_to_knee_local = safe_normalize(knee_local_transform.translation, Vec3::Y);
+        let knee_to_foot_local = safe_normalize(foot_local_transform.translation, Vec3::Y);
+        let hip_rest_dir_parent_space =
+            safe_normalize(hip_local_transform.rotation * hip_to_knee_local, Vec3::NEG_Y);
+        let knee_rest_dir_parent_space =
+            safe_normalize(knee_local_transform.rotation * knee_to_foot_local, Vec3::NEG_Y);
+        let foot_rest_owner_space =
+            owner_inverse_affine.transform_point3(foot_global_transform.translation());
+
+        commands.entity(leg.hip).insert(GroundedTwoBoneIkRig {
+            owner,
+            debug_color: leg.debug_color,
+            side_sign: leg.side_sign,
+            fore_sign: leg.fore_sign,
+            hip: leg.hip,
+            knee: leg.knee,
+            foot: leg.foot,
+            upper_len,
+            lower_len,
+            hip_bind_rotation: hip_local_transform.rotation,
+            knee_bind_rotation: knee_local_transform.rotation,
+            hip_rest_dir_parent_space,
+            knee_rest_dir_parent_space,
+            foot_rest_owner_space,
+        });
+        summary.inserted_count += 1;
+    }
+
+    summary
 }
 
 #[derive(Component, Reflect, Clone, Copy, Debug)]
