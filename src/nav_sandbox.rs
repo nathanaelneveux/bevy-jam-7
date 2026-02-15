@@ -4,9 +4,14 @@ use bevy::time::common_conditions::on_timer;
 use std::f32::consts::PI;
 use std::time::Duration;
 
-use crate::{mob_nav::{
-    MobNavAgent, MobNavGoal, MobNavMovementMode, MobNavRepath, MobNavStatus, MobNavUpdateSet,
-}, spider_query_experiment::{ExperimentSpider, ExperimentSpiderIkSettings, ExperimentSpiderVisualRoot}};
+use crate::{
+    mob_nav::{
+        MobNavAgent, MobNavGoal, MobNavMovementMode, MobNavRepath, MobNavStatus, MobNavUpdateSet,
+    },
+    spider_query_experiment::{
+        ExperimentSpiderVisualRoot, GroundedTwoBoneIkOwner, GroundedTwoBoneIkSettings,
+    },
+};
 
 const NAV_TEST_GROUND_VISUAL_Y_OFFSET: f32 = -0.5;
 const NAV_TEST_GROUND_VISUAL_YAW_OFFSET: f32 = PI;
@@ -90,9 +95,9 @@ fn spawn_nav_test_mobs(
                 points: ground_points,
                 next_target_index: ground_next_target_index,
             },
-            ExperimentSpider,
+            GroundedTwoBoneIkOwner,
             Transform::from_translation(ground_spawn),
-            ExperimentSpiderIkSettings::default(),
+            GroundedTwoBoneIkSettings::default(),
         ))
         .id();
     commands.entity(ground).with_children(|parent| {

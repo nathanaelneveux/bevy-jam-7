@@ -25,14 +25,14 @@ pub struct SpiderQueryExperimentPlugin;
 
 impl Plugin for SpiderQueryExperimentPlugin {
     fn build(&self, app: &mut App) {
-        app.register_type::<ExperimentSpiderIkSettings>()
+        app.register_type::<GroundedTwoBoneIkSettings>()
             .add_systems(Startup, spawn_spider_query_experiment)
             .add_systems(
                 Update,
                 (
                     init_spider_leg_rig,
-                    sanitize_experiment_spider_ik_settings,
-                    solve_spider_two_bone_ik,
+                    sanitize_grounded_two_bone_ik_settings,
+                    solve_grounded_two_bone_ik,
                 )
                     .chain(),
             );
@@ -40,7 +40,7 @@ impl Plugin for SpiderQueryExperimentPlugin {
 }
 
 #[derive(Component)]
-pub(crate) struct ExperimentSpider;
+pub(crate) struct GroundedTwoBoneIkOwner;
 
 #[derive(Component)]
 pub(crate) struct ExperimentSpiderVisualRoot {
@@ -51,9 +51,9 @@ pub(crate) struct ExperimentSpiderVisualRoot {
 struct ExperimentRigReady;
 
 #[derive(Component, Clone, Copy, Debug)]
-struct ExperimentSpiderLegRig {
+struct GroundedTwoBoneIkRig {
     owner: Entity,
-    leg: SpiderLegId,
+    debug_color: Color,
     side_sign: f32,
     fore_sign: f32,
     hip: Entity,
@@ -70,7 +70,7 @@ struct ExperimentSpiderLegRig {
 
 #[derive(Component, Reflect, Clone, Copy, Debug)]
 #[reflect(Component)]
-pub(crate) struct ExperimentSpiderIkSettings {
+pub(crate) struct GroundedTwoBoneIkSettings {
     /// Enable/disable the IK pass for this spider.
     enabled: bool,
     /// Draw tuning gizmos: ray, target marker, pole hint, and solved leg segments.
@@ -93,7 +93,7 @@ pub(crate) struct ExperimentSpiderIkSettings {
     gizmo_marker_size: f32,
 }
 
-impl Default for ExperimentSpiderIkSettings {
+impl Default for GroundedTwoBoneIkSettings {
     fn default() -> Self {
         Self {
             enabled: true,
@@ -110,7 +110,7 @@ impl Default for ExperimentSpiderIkSettings {
     }
 }
 
-impl ExperimentSpiderIkSettings {
+impl GroundedTwoBoneIkSettings {
     fn sanitize(self) -> Self {
         Self {
             enabled: self.enabled,
@@ -202,9 +202,9 @@ fn spawn_spider_query_experiment(mut commands: Commands, asset_server: Res<Asset
     let spider = commands
         .spawn((
             Name::new("SpiderQueryExperiment"),
-            ExperimentSpider,
+            GroundedTwoBoneIkOwner,
             Transform::from_xyz(EXPERIMENT_MODEL_X, EXPERIMENT_MODEL_Y, 0.0),
-            ExperimentSpiderIkSettings::default(),
+            GroundedTwoBoneIkSettings::default(),
         ))
         .id();
 
@@ -222,8 +222,8 @@ fn spawn_spider_query_experiment(mut commands: Commands, asset_server: Res<Asset
     });
 }
 
-fn sanitize_experiment_spider_ik_settings(
-    mut spiders: Query<&mut ExperimentSpiderIkSettings, With<ExperimentSpider>>,
+fn sanitize_grounded_two_bone_ik_settings(
+    mut spiders: Query<&mut GroundedTwoBoneIkSettings, With<GroundedTwoBoneIkOwner>>,
 ) {
     for mut settings in &mut spiders {
         *settings = settings.sanitize();
@@ -237,7 +237,7 @@ fn init_spider_leg_rig(
     names: Query<&Name>,
     local_transforms: Query<&Transform>,
     global_transforms: Query<&GlobalTransform>,
-    existing_leg_rigs: Query<(), With<ExperimentSpiderLegRig>>,
+    existing_leg_rigs: Query<(), With<GroundedTwoBoneIkRig>>,
 ) {
     for (visual_root, visual_info) in &visual_roots {
         let mut stack = vec![visual_root];
@@ -326,10 +326,11 @@ fn init_spider_leg_rig(
             );
             let foot_rest_owner_space =
                 owner_inverse_affine.transform_point3(foot_global_transform.translation());
+            let leg = spider_leg_from_index(index);
 
-            commands.entity(hip).insert(ExperimentSpiderLegRig {
+            commands.entity(hip).insert(GroundedTwoBoneIkRig {
                 owner: visual_info.owner,
-                leg: spider_leg_from_index(index),
+                debug_color: spider_leg_debug_color(leg),
                 side_sign: rig_match.side_sign,
                 fore_sign: rig_match.fore_sign,
                 hip,
@@ -351,11 +352,11 @@ fn init_spider_leg_rig(
     }
 }
 
-fn solve_spider_two_bone_ik(
+fn solve_grounded_two_bone_ik(
     spatial_query: SpatialQuery,
     mut gizmos: Gizmos,
-    spiders: Query<(&ExperimentSpiderIkSettings, &GlobalTransform), With<ExperimentSpider>>,
-    rigs: Query<&ExperimentSpiderLegRig>,
+    spiders: Query<(&GroundedTwoBoneIkSettings, &GlobalTransform), With<GroundedTwoBoneIkOwner>>,
+    rigs: Query<&GroundedTwoBoneIkRig>,
     global_transforms: Query<&GlobalTransform>,
     mut local_transforms: Query<&mut Transform>,
 ) {
@@ -378,7 +379,7 @@ fn solve_spider_two_bone_ik(
             continue;
         };
 
-        let leg_color = spider_leg_color(rig.leg);
+        let leg_color = rig.debug_color;
         let hip_world = hip_global_transform.translation();
         let foot_world = foot_global_transform.translation();
         let ray_anchor_world = spider_global_transform.transform_point(rig.foot_rest_owner_space);
@@ -700,7 +701,7 @@ fn spider_leg_bone_definition(name: &str) -> Option<SpiderRigBoneDefinition> {
     }
 }
 
-fn spider_leg_color(leg: SpiderLegId) -> Color {
+fn spider_leg_debug_color(leg: SpiderLegId) -> Color {
     match leg {
         SpiderLegId::FrontLeft => Color::srgb(1.0, 0.35, 0.35),
         SpiderLegId::FrontRight => Color::srgb(0.35, 1.0, 0.35),
