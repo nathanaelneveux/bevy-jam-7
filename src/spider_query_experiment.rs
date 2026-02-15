@@ -40,11 +40,11 @@ impl Plugin for SpiderQueryExperimentPlugin {
 }
 
 #[derive(Component)]
-struct ExperimentSpider;
+pub(crate) struct ExperimentSpider;
 
 #[derive(Component)]
-struct ExperimentSpiderVisualRoot {
-    owner: Entity,
+pub(crate) struct ExperimentSpiderVisualRoot {
+    pub owner: Entity,
 }
 
 #[derive(Component)]
@@ -70,7 +70,7 @@ struct ExperimentSpiderLegRig {
 
 #[derive(Component, Reflect, Clone, Copy, Debug)]
 #[reflect(Component)]
-struct ExperimentSpiderIkSettings {
+pub(crate) struct ExperimentSpiderIkSettings {
     /// Enable/disable the IK pass for this spider.
     enabled: bool,
     /// Draw tuning gizmos: ray, target marker, pole hint, and solved leg segments.
