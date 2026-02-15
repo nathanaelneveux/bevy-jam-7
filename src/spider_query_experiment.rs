@@ -72,7 +72,7 @@ struct GroundedTwoBoneIkRig {
 #[derive(Component, Reflect, Clone, Copy, Debug)]
 #[reflect(Component)]
 pub(crate) struct GroundedTwoBoneIkSettings {
-    /// Enable/disable the IK pass for this spider.
+    /// Enable/disable the grounded IK pass for this owner.
     enabled: bool,
     /// Draw tuning gizmos: ray, target marker, pole hint, and solved leg segments.
     draw_gizmos: bool,
@@ -82,11 +82,11 @@ pub(crate) struct GroundedTwoBoneIkSettings {
     ray_distance: f32,
     /// Final world-space Y offset added to the hit point (useful to keep feet above/below ground).
     target_foot_offset: f32,
-    /// Sideways pole offset from hip in spider local-space (controls outward knee bend).
+    /// Sideways pole offset from hip in owner local-space (controls outward knee bend).
     pole_side_offset: f32,
-    /// Forward pole offset from hip in spider local-space (front/rear legs apply this with sign).
+    /// Forward pole offset from hip in owner local-space (per-leg fore sign is applied).
     pole_forward_offset: f32,
-    /// Vertical pole offset from hip in spider local-space.
+    /// Vertical pole offset from hip in owner local-space.
     pole_up_offset: f32,
     /// Maximum solver reach as a ratio of (upper_len + lower_len); below 1.0 avoids full extension instability.
     max_reach_ratio: f32,
@@ -223,9 +223,9 @@ fn spawn_spider_query_experiment(mut commands: Commands, asset_server: Res<Asset
 }
 
 fn sanitize_grounded_two_bone_ik_settings(
-    mut spiders: Query<&mut GroundedTwoBoneIkSettings, With<GroundedTwoBoneIkOwner>>,
+    mut owners: Query<&mut GroundedTwoBoneIkSettings, With<GroundedTwoBoneIkOwner>>,
 ) {
-    for mut settings in &mut spiders {
+    for mut settings in &mut owners {
         *settings = settings.sanitize();
     }
 }
@@ -355,13 +355,13 @@ fn init_spider_leg_rig(
 fn solve_grounded_two_bone_ik(
     spatial_query: SpatialQuery,
     mut gizmos: Gizmos,
-    spiders: Query<(&GroundedTwoBoneIkSettings, &GlobalTransform), With<GroundedTwoBoneIkOwner>>,
+    owners: Query<(&GroundedTwoBoneIkSettings, &GlobalTransform), With<GroundedTwoBoneIkOwner>>,
     rigs: Query<&GroundedTwoBoneIkRig>,
     global_transforms: Query<&GlobalTransform>,
     mut local_transforms: Query<&mut Transform>,
 ) {
     for rig in &rigs {
-        let Ok((settings, spider_global_transform)) = spiders.get(rig.owner) else {
+        let Ok((settings, owner_global_transform)) = owners.get(rig.owner) else {
             continue;
         };
         if !settings.enabled {
@@ -382,7 +382,7 @@ fn solve_grounded_two_bone_ik(
         let leg_color = rig.debug_color;
         let hip_world = hip_global_transform.translation();
         let foot_world = foot_global_transform.translation();
-        let ray_anchor_world = spider_global_transform.transform_point(rig.foot_rest_owner_space);
+        let ray_anchor_world = owner_global_transform.transform_point(rig.foot_rest_owner_space);
         let ray_origin = ray_anchor_world + Vec3::Y * settings.ray_origin_up;
         let ray_end = ray_origin + Vec3::NEG_Y * settings.ray_distance;
 
@@ -425,9 +425,9 @@ fn solve_grounded_two_bone_ik(
 
         let hit_point = ray_origin + Vec3::NEG_Y * hit.distance;
         let target = hit_point + Vec3::Y * settings.target_foot_offset;
-        let spider_rotation = spider_global_transform.rotation();
+        let owner_rotation = owner_global_transform.rotation();
         let pole_point = hip_world
-            + spider_rotation
+            + owner_rotation
                 * Vec3::new(
                     settings.pole_side_offset * rig.side_sign,
                     settings.pole_up_offset,
