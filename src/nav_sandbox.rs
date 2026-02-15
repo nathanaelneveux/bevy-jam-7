@@ -8,9 +8,7 @@ use crate::{
     mob_nav::{
         MobNavAgent, MobNavGoal, MobNavMovementMode, MobNavRepath, MobNavStatus, MobNavUpdateSet,
     },
-    spider_query_experiment::{
-        ExperimentSpiderVisualRoot, GroundedTwoBoneIkOwner, GroundedTwoBoneIkSettings,
-    },
+    spider_query_experiment::{ExperimentSpiderVisualRoot, GroundedTwoBoneIkOwner},
 };
 
 const NAV_TEST_GROUND_VISUAL_Y_OFFSET: f32 = -0.5;
@@ -97,7 +95,6 @@ fn spawn_nav_test_mobs(
             },
             GroundedTwoBoneIkOwner,
             Transform::from_translation(ground_spawn),
-            GroundedTwoBoneIkSettings::default(),
         ))
         .id();
     commands.entity(ground).with_children(|parent| {

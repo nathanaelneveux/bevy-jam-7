@@ -40,6 +40,7 @@ impl Plugin for SpiderQueryExperimentPlugin {
 }
 
 #[derive(Component)]
+#[require(GroundedTwoBoneIkSettings)]
 pub(crate) struct GroundedTwoBoneIkOwner;
 
 #[derive(Component)]
@@ -204,7 +205,6 @@ fn spawn_spider_query_experiment(mut commands: Commands, asset_server: Res<Asset
             Name::new("SpiderQueryExperiment"),
             GroundedTwoBoneIkOwner,
             Transform::from_xyz(EXPERIMENT_MODEL_X, EXPERIMENT_MODEL_Y, 0.0),
-            GroundedTwoBoneIkSettings::default(),
         ))
         .id();
 
