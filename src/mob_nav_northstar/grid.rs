@@ -218,7 +218,12 @@ fn try_finish_pending_grid_build(
     let mut completed: Option<(CardinalIsoGrid, IVec3, IVec3, IVec3)> = None;
     if let Some(pending) = rolling.pending_build.as_mut() {
         if let Some(grid) = future::block_on(future::poll_once(&mut pending.task)) {
-            completed = Some((grid, pending.center_world, pending.min_world, pending.max_world));
+            completed = Some((
+                grid,
+                pending.center_world,
+                pending.min_world,
+                pending.max_world,
+            ));
         }
     }
 

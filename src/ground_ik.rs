@@ -158,14 +158,24 @@ where
             continue;
         }
 
-        let Ok([hip_local_transform, knee_local_transform, foot_local_transform]) =
-            local_transforms.get_many([leg.hip, leg.knee, leg.foot])
+        let Ok(
+            [
+                hip_local_transform,
+                knee_local_transform,
+                foot_local_transform,
+            ],
+        ) = local_transforms.get_many([leg.hip, leg.knee, leg.foot])
         else {
             summary.skipped_missing_transform_count += 1;
             continue;
         };
-        let Ok([hip_global_transform, knee_global_transform, foot_global_transform]) =
-            global_transforms.get_many([leg.hip, leg.knee, leg.foot])
+        let Ok(
+            [
+                hip_global_transform,
+                knee_global_transform,
+                foot_global_transform,
+            ],
+        ) = global_transforms.get_many([leg.hip, leg.knee, leg.foot])
         else {
             summary.skipped_missing_transform_count += 1;
             continue;
@@ -182,10 +192,14 @@ where
 
         let hip_to_knee_local = safe_normalize(knee_local_transform.translation, Vec3::Y);
         let knee_to_foot_local = safe_normalize(foot_local_transform.translation, Vec3::Y);
-        let hip_rest_dir_parent_space =
-            safe_normalize(hip_local_transform.rotation * hip_to_knee_local, Vec3::NEG_Y);
-        let knee_rest_dir_parent_space =
-            safe_normalize(knee_local_transform.rotation * knee_to_foot_local, Vec3::NEG_Y);
+        let hip_rest_dir_parent_space = safe_normalize(
+            hip_local_transform.rotation * hip_to_knee_local,
+            Vec3::NEG_Y,
+        );
+        let knee_rest_dir_parent_space = safe_normalize(
+            knee_local_transform.rotation * knee_to_foot_local,
+            Vec3::NEG_Y,
+        );
         let foot_rest_owner_space =
             owner_inverse_affine.transform_point3(foot_global_transform.translation());
 

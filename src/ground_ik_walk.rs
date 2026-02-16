@@ -5,8 +5,7 @@ use bevy::prelude::*;
 
 use crate::ground_ik::{
     GroundIkSet, GroundedTwoBoneIkOwner, GroundedTwoBoneIkRig, GroundedTwoBoneIkSettings,
-    GroundedTwoBoneIkTargetOverride, sample_ground_target,
-    sample_ground_target_with_world_offset,
+    GroundedTwoBoneIkTargetOverride, sample_ground_target, sample_ground_target_with_world_offset,
 };
 
 const WALK_DEFAULT_STEP_DURATION: f32 = 0.22;
@@ -211,7 +210,10 @@ struct GroundedTwoBoneIkWalkOwnerState {
 fn sanitize_grounded_two_bone_ik_walk_settings(
     mut owners: Query<
         &mut GroundedTwoBoneIkWalkSettings,
-        (With<GroundedTwoBoneIkWalk>, Changed<GroundedTwoBoneIkWalkSettings>),
+        (
+            With<GroundedTwoBoneIkWalk>,
+            Changed<GroundedTwoBoneIkWalkSettings>,
+        ),
     >,
 ) {
     for mut settings in &mut owners {
@@ -240,10 +242,8 @@ fn advance_grounded_two_bone_ik_walk_owner_state(
     for (owner, settings, owner_global_transform, owner_state) in &mut owners {
         let cycle = settings.gait_cycle_duration;
         let owner_world_position = owner_global_transform.translation();
-        let owner_forward = planar_direction_or(
-            owner_global_transform.forward().as_vec3(),
-            Vec3::Z,
-        );
+        let owner_forward =
+            planar_direction_or(owner_global_transform.forward().as_vec3(), Vec3::Z);
         match owner_state {
             Some(mut owner_state) => {
                 owner_state.gait_elapsed += dt;
@@ -267,12 +267,14 @@ fn advance_grounded_two_bone_ik_walk_owner_state(
                 owner_state.last_position = owner_world_position;
             }
             None => {
-                commands.entity(owner).insert(GroundedTwoBoneIkWalkOwnerState {
-                    gait_elapsed: 0.0,
-                    last_position: owner_world_position,
-                    travel_direction: owner_forward,
-                    travel_speed: 0.0,
-                });
+                commands
+                    .entity(owner)
+                    .insert(GroundedTwoBoneIkWalkOwnerState {
+                        gait_elapsed: 0.0,
+                        last_position: owner_world_position,
+                        travel_direction: owner_forward,
+                        travel_speed: 0.0,
+                    });
             }
         }
     }
@@ -292,15 +294,13 @@ fn update_grounded_two_bone_ik_walk_targets(
         ),
         (With<GroundedTwoBoneIkOwner>, With<GroundedTwoBoneIkWalk>),
     >,
-    mut rigs: Query<
-        (
-            Entity,
-            &GroundedTwoBoneIkRig,
-            Option<&GroundedTwoBoneIkWalkLegPhase>,
-            Option<&mut GroundedTwoBoneIkWalkLegState>,
-            Option<&mut GroundedTwoBoneIkTargetOverride>,
-        ),
-    >,
+    mut rigs: Query<(
+        Entity,
+        &GroundedTwoBoneIkRig,
+        Option<&GroundedTwoBoneIkWalkLegPhase>,
+        Option<&mut GroundedTwoBoneIkWalkLegState>,
+        Option<&mut GroundedTwoBoneIkTargetOverride>,
+    )>,
 ) {
     let dt = time.delta_secs();
 
@@ -402,9 +402,11 @@ fn update_grounded_two_bone_ik_walk_targets(
             if let Some(mut target_override) = target_override {
                 target_override.world_target = effective_target;
             } else {
-                commands.entity(rig_entity).insert(GroundedTwoBoneIkTargetOverride {
-                    world_target: effective_target,
-                });
+                commands
+                    .entity(rig_entity)
+                    .insert(GroundedTwoBoneIkTargetOverride {
+                        world_target: effective_target,
+                    });
             }
             continue;
         }
@@ -423,9 +425,11 @@ fn update_grounded_two_bone_ik_walk_targets(
         if let Some(mut target_override) = target_override {
             target_override.world_target = sampled_target;
         } else {
-            commands.entity(rig_entity).insert(GroundedTwoBoneIkTargetOverride {
-                world_target: sampled_target,
-            });
+            commands
+                .entity(rig_entity)
+                .insert(GroundedTwoBoneIkTargetOverride {
+                    world_target: sampled_target,
+                });
         }
     }
 }
@@ -562,9 +566,10 @@ fn clear_walk_components(
     has_target_override: bool,
 ) {
     if has_leg_state || has_target_override {
-        commands
-            .entity(rig_entity)
-            .remove::<(GroundedTwoBoneIkWalkLegState, GroundedTwoBoneIkTargetOverride)>();
+        commands.entity(rig_entity).remove::<(
+            GroundedTwoBoneIkWalkLegState,
+            GroundedTwoBoneIkTargetOverride,
+        )>();
     }
 }
 
