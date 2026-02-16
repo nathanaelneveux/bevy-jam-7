@@ -8,7 +8,7 @@ pub(crate) struct SpiderVisualRoot {
 }
 
 #[derive(Component)]
-pub(crate) struct SpiderLegRigReady;
+pub(crate) struct SpiderRigReady;
 
 #[derive(Clone, Copy)]
 enum SpiderLegJoint {
@@ -44,7 +44,7 @@ enum SpiderLegId {
 
 pub(crate) fn init_spider_leg_rig(
     mut commands: Commands,
-    visual_roots: Query<(Entity, &SpiderVisualRoot), Without<SpiderLegRigReady>>,
+    visual_roots: Query<(Entity, &SpiderVisualRoot), Without<SpiderRigReady>>,
     children_query: Query<&Children>,
     names: Query<&Name>,
     local_transforms: Query<&Transform>,
@@ -111,7 +111,7 @@ pub(crate) fn init_spider_leg_rig(
         );
 
         if complete_leg_count == 4 {
-            commands.entity(visual_root).insert(SpiderLegRigReady);
+            commands.entity(visual_root).insert(SpiderRigReady);
         }
     }
 }
