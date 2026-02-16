@@ -23,10 +23,10 @@ pub struct MobNavNorthstarConfig {
 impl Default for MobNavNorthstarConfig {
     fn default() -> Self {
         Self {
-            grid_width: 128,
+            grid_width: 150,
             grid_height: 32,
-            grid_depth: 128,
-            recenter_margin_voxels: 20,
+            grid_depth: 150,
+            recenter_margin_voxels: 32,
             chunk_size: 8,
             chunk_depth: 8,
             agent_height_voxels: 2,

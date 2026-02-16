@@ -35,7 +35,13 @@ impl Plugin for MobNavNorthstarPlugin {
             .add_plugins(NorthstarPlugin::<CardinalIsoNeighborhood>::default())
             .add_systems(
                 Update,
-                sync::sync_ground_agents_to_northstar.before(MobNavUpdateSet::PlanPaths),
+                grid::recenter_rolling_grid_for_player.in_set(MobNavUpdateSet::EnsureState),
+            )
+            .add_systems(
+                Update,
+                sync::sync_ground_agents_to_northstar
+                    .after(MobNavUpdateSet::EnsureState)
+                    .before(MobNavUpdateSet::PlanPaths),
             )
             .add_systems(
                 Update,

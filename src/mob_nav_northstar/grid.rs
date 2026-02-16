@@ -1,60 +1,50 @@
 use bevy::prelude::*;
+use bevy::tasks::{AsyncComputeTaskPool, Task, futures_lite::future};
 use bevy_northstar::grid::GridSettings;
 use bevy_northstar::prelude::{CardinalIsoGrid, GridSettingsBuilder, Nav, filter};
 use bevy_voxel_world::prelude::VoxelWorld;
 
 use crate::cave_world::CaveWorld;
+use crate::player_controller::Player;
 
 use super::MobNavNorthstarConfig;
 
 #[derive(Resource, Default)]
 pub(crate) struct MobNavNorthstarRollingGrid {
     pub(crate) grid_entity: Option<Entity>,
+    pub(crate) center_world: IVec3,
     pub(crate) min_world: IVec3,
     pub(crate) max_world: IVec3,
     pub(crate) revision: u64,
     pub(crate) initialized: bool,
+    pending_build: Option<PendingGridBuildTask>,
 }
 
-pub(crate) fn ensure_rolling_grid_for_player(
-    commands: &mut Commands,
-    rolling: &mut MobNavNorthstarRollingGrid,
-    voxel_world: &VoxelWorld<CaveWorld>,
-    config: &MobNavNorthstarConfig,
-    player_world: IVec3,
-) {
-    let center_world = IVec3::new(
-        player_world.x,
-        player_world.y.clamp(config.min_world_y, config.max_world_y),
-        player_world.z,
-    );
-    let dimensions = effective_dimensions(config);
+struct PendingGridBuildTask {
+    center_world: IVec3,
+    min_world: IVec3,
+    max_world: IVec3,
+    task: Task<CardinalIsoGrid>,
+}
 
-    let needs_rebuild = !rolling.initialized
-        || !is_inside_bounds_with_margin(
-            player_world,
-            rolling.min_world,
-            rolling.max_world,
-            config.recenter_margin_voxels,
-        );
-    if !needs_rebuild {
+pub(crate) fn recenter_rolling_grid_for_player(
+    mut commands: Commands,
+    mut rolling: ResMut<MobNavNorthstarRollingGrid>,
+    cave_world: Res<CaveWorld>,
+    config: Res<MobNavNorthstarConfig>,
+    player: Single<&GlobalTransform, With<Player>>,
+) {
+    let player_world = player.translation().floor().as_ivec3();
+    try_finish_pending_grid_build(&mut commands, &mut rolling);
+
+    if rolling.pending_build.is_some() {
+        return;
+    }
+    if !needs_rebuild_for_player(player_world, &rolling, &config) {
         return;
     }
 
-    let (min_world, max_world) = rolling_bounds(center_world, dimensions, config);
-    let grid = build_grid(voxel_world, config, dimensions, min_world);
-
-    if let Some(grid_entity) = rolling.grid_entity {
-        commands.entity(grid_entity).insert(grid);
-    } else {
-        let grid_entity = commands.spawn((Name::new("NorthstarGrid"), grid)).id();
-        rolling.grid_entity = Some(grid_entity);
-    }
-
-    rolling.min_world = min_world;
-    rolling.max_world = max_world;
-    rolling.revision = rolling.revision.wrapping_add(1);
-    rolling.initialized = true;
+    spawn_pending_grid_build(&mut rolling, &cave_world, &config, player_world);
 }
 
 pub(crate) fn world_to_local(world: IVec3, min_world: IVec3, max_world: IVec3) -> Option<UVec3> {
@@ -173,27 +163,86 @@ fn rolling_bounds(
     (min_world, max_world)
 }
 
-fn is_inside_bounds_with_margin(
+fn moved_beyond_recenter_distance(
     world: IVec3,
-    min_world: IVec3,
-    max_world: IVec3,
-    margin: i32,
+    center_world: IVec3,
+    recenter_distance: i32,
 ) -> bool {
-    let margin = margin.max(0);
-    let x_margin = margin.min((max_world.x - min_world.x).max(0) / 2);
-    let y_margin = margin.min((max_world.y - min_world.y).max(0) / 2);
-    let z_margin = margin.min((max_world.z - min_world.z).max(0) / 2);
-
-    world.x >= min_world.x + x_margin
-        && world.x <= max_world.x - x_margin
-        && world.y >= min_world.y + y_margin
-        && world.y <= max_world.y - y_margin
-        && world.z >= min_world.z + z_margin
-        && world.z <= max_world.z - z_margin
+    let recenter_distance = recenter_distance.max(1);
+    let delta = world - center_world;
+    delta.x.abs().max(delta.z.abs()) >= recenter_distance
 }
 
-fn build_grid(
-    voxel_world: &VoxelWorld<CaveWorld>,
+fn needs_rebuild_for_player(
+    player_world: IVec3,
+    rolling: &MobNavNorthstarRollingGrid,
+    config: &MobNavNorthstarConfig,
+) -> bool {
+    let recenter_distance = config.recenter_margin_voxels.max(1);
+    !rolling.initialized
+        || moved_beyond_recenter_distance(player_world, rolling.center_world, recenter_distance)
+        || world_to_local(player_world, rolling.min_world, rolling.max_world).is_none()
+}
+
+fn spawn_pending_grid_build(
+    rolling: &mut MobNavNorthstarRollingGrid,
+    cave_world: &CaveWorld,
+    config: &MobNavNorthstarConfig,
+    player_world: IVec3,
+) {
+    let center_world = IVec3::new(
+        player_world.x,
+        player_world.y.clamp(config.min_world_y, config.max_world_y),
+        player_world.z,
+    );
+    let dimensions = effective_dimensions(config);
+    let (min_world, max_world) = rolling_bounds(center_world, dimensions, config);
+
+    let cave_world = cave_world.clone();
+    let config = config.clone();
+    let task = AsyncComputeTaskPool::get().spawn(async move {
+        build_grid_for_cave_world(&cave_world, &config, dimensions, min_world)
+    });
+    rolling.pending_build = Some(PendingGridBuildTask {
+        center_world,
+        min_world,
+        max_world,
+        task,
+    });
+}
+
+fn try_finish_pending_grid_build(
+    commands: &mut Commands,
+    rolling: &mut MobNavNorthstarRollingGrid,
+) {
+    let mut completed: Option<(CardinalIsoGrid, IVec3, IVec3, IVec3)> = None;
+    if let Some(pending) = rolling.pending_build.as_mut() {
+        if let Some(grid) = future::block_on(future::poll_once(&mut pending.task)) {
+            completed = Some((grid, pending.center_world, pending.min_world, pending.max_world));
+        }
+    }
+
+    let Some((grid, center_world, min_world, max_world)) = completed else {
+        return;
+    };
+    rolling.pending_build = None;
+
+    if let Some(grid_entity) = rolling.grid_entity {
+        commands.entity(grid_entity).insert(grid);
+    } else {
+        let grid_entity = commands.spawn((Name::new("NorthstarGrid"), grid)).id();
+        rolling.grid_entity = Some(grid_entity);
+    }
+
+    rolling.center_world = center_world;
+    rolling.min_world = min_world;
+    rolling.max_world = max_world;
+    rolling.revision = rolling.revision.wrapping_add(1);
+    rolling.initialized = true;
+}
+
+fn build_grid_for_cave_world(
+    cave_world: &CaveWorld,
     config: &MobNavNorthstarConfig,
     dimensions: IVec3,
     min_world: IVec3,
@@ -201,16 +250,24 @@ fn build_grid(
     let settings = grid_settings_from_dimensions(dimensions, config);
     let mut grid = CardinalIsoGrid::new(&settings);
     let agent_height_voxels = config.agent_height_voxels.max(1);
+    let max_world_y = min_world.y + dimensions.y - 1;
 
-    for grid_z in 0..dimensions.y {
-        for grid_y in 0..dimensions.z {
-            for grid_x in 0..dimensions.x {
-                let local = UVec3::new(grid_x as u32, grid_y as u32, grid_z as u32);
-                let world = local_to_world_ivec(local, min_world);
-                if is_walkable_cell(voxel_world, world, agent_height_voxels) {
-                    grid.set_nav(local, Nav::Passable(1));
-                }
+    for grid_y in 0..dimensions.z {
+        let world_z = min_world.z + grid_y;
+        for grid_x in 0..dimensions.x {
+            let world_x = min_world.x + grid_x;
+            let (floor_y, ceiling_y) = cave_world.sample_column_bounds(world_x, world_z);
+            let stand_y = floor_y + 1;
+
+            if stand_y < min_world.y || stand_y > max_world_y {
+                continue;
             }
+            if stand_y + agent_height_voxels - 1 >= ceiling_y {
+                continue;
+            }
+
+            let local = UVec3::new(grid_x as u32, grid_y as u32, (stand_y - min_world.y) as u32);
+            grid.set_nav(local, Nav::Passable(1));
         }
     }
 
