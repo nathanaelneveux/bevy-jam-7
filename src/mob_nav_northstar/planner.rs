@@ -9,13 +9,9 @@ use crate::cave_world::CaveWorld;
 use crate::mob_nav::{
     MobNavMovementMode, MobNavPlanRequest, MobNavPlanResult, MobNavPlanResultKind,
 };
-use crate::player_controller::Player;
 
 use super::MobNavNorthstarConfig;
-use super::grid::{
-    MobNavNorthstarRollingGrid, ensure_rolling_grid_for_player, find_nearest_walkable_local,
-    local_to_world,
-};
+use super::grid::{MobNavNorthstarRollingGrid, find_nearest_walkable_local, local_to_world};
 
 #[derive(Component, Debug, Clone, Copy)]
 pub(crate) struct MobNavNorthstarPendingRequest {
@@ -31,8 +27,7 @@ pub(crate) fn plan_ground_paths_with_northstar(
     mut results: MessageWriter<MobNavPlanResult>,
     voxel_world: VoxelWorld<CaveWorld>,
     config: Res<MobNavNorthstarConfig>,
-    mut rolling: ResMut<MobNavNorthstarRollingGrid>,
-    player: Single<&GlobalTransform, With<Player>>,
+    rolling: Res<MobNavNorthstarRollingGrid>,
 ) {
     let ground_requests = requests
         .read()
@@ -42,15 +37,6 @@ pub(crate) fn plan_ground_paths_with_northstar(
     if ground_requests.is_empty() {
         return;
     }
-
-    let player_world = player.translation().floor().as_ivec3();
-    ensure_rolling_grid_for_player(
-        &mut commands,
-        &mut rolling,
-        &voxel_world,
-        &config,
-        player_world,
-    );
 
     let Some(grid_entity) = rolling.grid_entity else {
         for request in ground_requests {

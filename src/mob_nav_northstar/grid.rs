@@ -4,16 +4,35 @@ use bevy_northstar::prelude::{CardinalIsoGrid, GridSettingsBuilder, Nav, filter}
 use bevy_voxel_world::prelude::VoxelWorld;
 
 use crate::cave_world::CaveWorld;
+use crate::player_controller::Player;
 
 use super::MobNavNorthstarConfig;
 
 #[derive(Resource, Default)]
 pub(crate) struct MobNavNorthstarRollingGrid {
     pub(crate) grid_entity: Option<Entity>,
+    pub(crate) center_world: IVec3,
     pub(crate) min_world: IVec3,
     pub(crate) max_world: IVec3,
     pub(crate) revision: u64,
     pub(crate) initialized: bool,
+}
+
+pub(crate) fn recenter_rolling_grid_for_player(
+    mut commands: Commands,
+    mut rolling: ResMut<MobNavNorthstarRollingGrid>,
+    voxel_world: VoxelWorld<CaveWorld>,
+    config: Res<MobNavNorthstarConfig>,
+    player: Single<&GlobalTransform, With<Player>>,
+) {
+    let player_world = player.translation().floor().as_ivec3();
+    ensure_rolling_grid_for_player(
+        &mut commands,
+        &mut rolling,
+        &voxel_world,
+        &config,
+        player_world,
+    );
 }
 
 pub(crate) fn ensure_rolling_grid_for_player(
@@ -28,19 +47,16 @@ pub(crate) fn ensure_rolling_grid_for_player(
         player_world.y.clamp(config.min_world_y, config.max_world_y),
         player_world.z,
     );
-    let dimensions = effective_dimensions(config);
-
+    let recenter_distance = config.recenter_margin_voxels.max(1);
     let needs_rebuild = !rolling.initialized
-        || !is_inside_bounds_with_margin(
-            player_world,
-            rolling.min_world,
-            rolling.max_world,
-            config.recenter_margin_voxels,
-        );
+        || moved_beyond_recenter_distance(player_world, rolling.center_world, recenter_distance)
+        || world_to_local(player_world, rolling.min_world, rolling.max_world).is_none();
+
     if !needs_rebuild {
         return;
     }
 
+    let dimensions = effective_dimensions(config);
     let (min_world, max_world) = rolling_bounds(center_world, dimensions, config);
     let grid = build_grid(voxel_world, config, dimensions, min_world);
 
@@ -51,6 +67,7 @@ pub(crate) fn ensure_rolling_grid_for_player(
         rolling.grid_entity = Some(grid_entity);
     }
 
+    rolling.center_world = center_world;
     rolling.min_world = min_world;
     rolling.max_world = max_world;
     rolling.revision = rolling.revision.wrapping_add(1);
@@ -173,23 +190,14 @@ fn rolling_bounds(
     (min_world, max_world)
 }
 
-fn is_inside_bounds_with_margin(
+fn moved_beyond_recenter_distance(
     world: IVec3,
-    min_world: IVec3,
-    max_world: IVec3,
-    margin: i32,
+    center_world: IVec3,
+    recenter_distance: i32,
 ) -> bool {
-    let margin = margin.max(0);
-    let x_margin = margin.min((max_world.x - min_world.x).max(0) / 2);
-    let y_margin = margin.min((max_world.y - min_world.y).max(0) / 2);
-    let z_margin = margin.min((max_world.z - min_world.z).max(0) / 2);
-
-    world.x >= min_world.x + x_margin
-        && world.x <= max_world.x - x_margin
-        && world.y >= min_world.y + y_margin
-        && world.y <= max_world.y - y_margin
-        && world.z >= min_world.z + z_margin
-        && world.z <= max_world.z - z_margin
+    let recenter_distance = recenter_distance.max(1);
+    let delta = world - center_world;
+    delta.x.abs().max(delta.z.abs()) >= recenter_distance
 }
 
 fn build_grid(
