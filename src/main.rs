@@ -1,13 +1,12 @@
 mod cave_noise;
 mod cave_world;
 mod chunk_colliders;
+mod enemies;
 mod ground_ik;
 mod ground_ik_walk;
 mod mob_nav;
 mod mob_nav_northstar;
-mod nav_sandbox;
 mod player_controller;
-mod spider_query_experiment;
 
 use avian3d::prelude::*;
 use bevy::asset::AssetMetaCheck;
@@ -18,13 +17,12 @@ use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
 
 use cave_world::CaveWorldPlugin;
 use chunk_colliders::ChunkColliderPlugin;
+use enemies::EnemyPlugin;
 use ground_ik::GroundIkPlugin;
 use ground_ik_walk::GroundIkWalkPlugin;
 use mob_nav::MobNavPlugin;
 use mob_nav_northstar::MobNavNorthstarPlugin;
-use nav_sandbox::NavSandboxPlugin;
 use player_controller::PlayerControllerPlugin;
-use spider_query_experiment::SpiderQueryExperimentPlugin;
 
 #[derive(Resource, Default)]
 pub(crate) struct InspectorMode {
@@ -41,6 +39,7 @@ fn main() {
         .init_resource::<InspectorMode>()
         .add_plugins(EnhancedInputPlugin)
         .add_plugins(PhysicsPlugins::default())
+        //.add_plugins(PhysicsDebugPlugin)
         .add_plugins(EguiPlugin::default())
         .add_plugins(WorldInspectorPlugin::default().run_if(inspector_mode_active))
         .add_plugins(CaveWorldPlugin)
@@ -50,8 +49,7 @@ fn main() {
         .add_plugins(MobNavNorthstarPlugin)
         .add_plugins(GroundIkPlugin)
         .add_plugins(GroundIkWalkPlugin)
-        .add_plugins(NavSandboxPlugin)
-        .add_plugins(SpiderQueryExperimentPlugin)
+        .add_plugins(EnemyPlugin)
         .add_systems(Update, toggle_inspector_mode)
         .add_systems(Startup, setup)
         .run();

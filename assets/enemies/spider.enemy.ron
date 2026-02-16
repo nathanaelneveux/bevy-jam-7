@@ -1,0 +1,16 @@
+(
+    max_alive: 1000,
+    spawn_interval_secs: 1.5,
+    spawn_min_distance: 32.0,
+    spawn_max_distance: 64.0,
+    spawn_height_offset: 1.5,
+    collider_radius: 0.5,
+    collider_half_length: 0.5,
+    move_speed: 4.0,
+    arrival_tolerance: 0.4,
+    chase_goal_update_distance: 1.35,
+    blocked_repath_interval_secs: 0.75,
+    body_turn_speed_rad_per_sec: 5.0,
+    visual_y_offset: -0.5,
+    visual_yaw_offset_degrees: 180.0,
+)
