@@ -327,7 +327,6 @@ pub(crate) fn sample_ground_target_with_world_offset(
     settings: &GroundedTwoBoneIkSettings,
     ray_anchor_world_offset: Vec3,
 ) -> Option<Vec3> {
-    let settings = settings.sanitize();
     let ray_anchor_world =
         owner_global_transform.transform_point(rig.foot_rest_owner_space) + ray_anchor_world_offset;
     let ray_origin = ray_anchor_world + Vec3::Y * settings.ray_origin_up;

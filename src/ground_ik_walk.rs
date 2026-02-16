@@ -2,7 +2,6 @@
 
 use avian3d::prelude::*;
 use bevy::prelude::*;
-use std::f32::consts::PI;
 
 use crate::ground_ik::{
     GroundIkSet, GroundedTwoBoneIkOwner, GroundedTwoBoneIkRig, GroundedTwoBoneIkSettings,
@@ -60,6 +59,7 @@ impl Plugin for GroundIkWalkPlugin {
                 Update,
                 update_grounded_two_bone_ik_walk_targets
                     .in_set(GroundIkWalkSet::UpdateTargets)
+                    .after(GroundIkSet::Sanitize)
                     .before(GroundIkSet::Solve),
             );
     }
@@ -76,7 +76,7 @@ pub(crate) enum GroundIkWalkSet {
 /// Opt-in marker for procedural foot planting/stepping.
 pub(crate) struct GroundedTwoBoneIkWalk;
 
-#[derive(Component, Reflect, Clone, Copy, Debug)]
+#[derive(Component, Reflect, Clone, Copy, Debug, PartialEq)]
 #[reflect(Component)]
 /// Per-owner procedural walk tuning.
 pub(crate) struct GroundedTwoBoneIkWalkSettings {
@@ -209,10 +209,16 @@ struct GroundedTwoBoneIkWalkOwnerState {
 }
 
 fn sanitize_grounded_two_bone_ik_walk_settings(
-    mut owners: Query<&mut GroundedTwoBoneIkWalkSettings, With<GroundedTwoBoneIkWalk>>,
+    mut owners: Query<
+        &mut GroundedTwoBoneIkWalkSettings,
+        (With<GroundedTwoBoneIkWalk>, Changed<GroundedTwoBoneIkWalkSettings>),
+    >,
 ) {
     for mut settings in &mut owners {
-        *settings = settings.sanitize();
+        let sanitized = settings.sanitize();
+        if *settings != sanitized {
+            *settings = sanitized;
+        }
     }
 }
 
@@ -232,7 +238,6 @@ fn advance_grounded_two_bone_ik_walk_owner_state(
     let dt = time.delta_secs();
 
     for (owner, settings, owner_global_transform, owner_state) in &mut owners {
-        let settings = settings.sanitize();
         let cycle = settings.gait_cycle_duration;
         let owner_world_position = owner_global_transform.translation();
         let owner_forward = planar_direction_or(
@@ -248,15 +253,16 @@ fn advance_grounded_two_bone_ik_walk_owner_state(
 
                 let delta_world = owner_world_position - owner_state.last_position;
                 let planar_delta = Vec3::new(delta_world.x, 0.0, delta_world.z);
-                if dt > 0.00001 {
-                    owner_state.travel_speed = planar_delta.length() / dt;
+                let planar_delta_len_sq = planar_delta.length_squared();
+                if dt > 0.00001 && planar_delta_len_sq > 0.000001 {
+                    let planar_delta_len = planar_delta_len_sq.sqrt();
+                    owner_state.travel_speed = planar_delta_len / dt;
+                    owner_state.travel_direction = planar_delta / planar_delta_len;
                 } else {
                     owner_state.travel_speed = 0.0;
-                }
-                if planar_delta.length_squared() > 0.000001 {
-                    owner_state.travel_direction = planar_delta.normalize();
-                } else if owner_state.travel_direction.length_squared() <= 0.000001 {
-                    owner_state.travel_direction = owner_forward;
+                    if owner_state.travel_direction.length_squared() <= 0.000001 {
+                        owner_state.travel_direction = owner_forward;
+                    }
                 }
                 owner_state.last_position = owner_world_position;
             }
@@ -299,43 +305,64 @@ fn update_grounded_two_bone_ik_walk_targets(
     let dt = time.delta_secs();
 
     for (rig_entity, rig, leg_phase_override, leg_state, target_override) in &mut rigs {
+        let has_leg_state = leg_state.is_some();
+        let has_target_override = target_override.is_some();
         let Ok((ik_settings, walk_settings, owner_state, owner_global_transform)) =
             owners.get(rig.owner)
         else {
-            commands
-                .entity(rig_entity)
-                .remove::<(GroundedTwoBoneIkWalkLegState, GroundedTwoBoneIkTargetOverride)>();
+            clear_walk_components(
+                &mut commands,
+                rig_entity,
+                has_leg_state,
+                has_target_override,
+            );
             continue;
         };
 
-        let walk_settings = walk_settings.sanitize();
         if !walk_settings.enabled {
-            commands
-                .entity(rig_entity)
-                .remove::<(GroundedTwoBoneIkWalkLegState, GroundedTwoBoneIkTargetOverride)>();
+            clear_walk_components(
+                &mut commands,
+                rig_entity,
+                has_leg_state,
+                has_target_override,
+            );
             continue;
         }
 
         let travel_direction = owner_state
             .map(|state| state.travel_direction)
-            .unwrap_or_else(|| planar_direction_or(owner_global_transform.forward().as_vec3(), Vec3::Z));
+            .unwrap_or_else(|| {
+                planar_direction_or(owner_global_transform.forward().as_vec3(), Vec3::Z)
+            });
         let travel_speed = owner_state.map(|state| state.travel_speed).unwrap_or(0.0);
-        let forward_distance = compute_forward_distance(walk_settings, travel_speed);
-        let ray_anchor_world_offset = if travel_speed >= WALK_MIN_TRAVEL_SPEED_FOR_FORWARD {
+        let forward_distance = compute_forward_distance(*walk_settings, travel_speed);
+        let use_forward_probe =
+            travel_speed >= WALK_MIN_TRAVEL_SPEED_FOR_FORWARD && forward_distance > 0.0001;
+        let ray_anchor_world_offset = if use_forward_probe {
             travel_direction * forward_distance
         } else {
             Vec3::ZERO
         };
 
-        let Some(sampled_target) = sample_ground_target_with_world_offset(
-            &spatial_query,
-            rig.owner,
-            owner_global_transform,
-            rig,
-            ik_settings,
-            ray_anchor_world_offset,
-        )
-        .or_else(|| {
+        let sampled_target = if use_forward_probe {
+            sample_ground_target_with_world_offset(
+                &spatial_query,
+                rig.owner,
+                owner_global_transform,
+                rig,
+                ik_settings,
+                ray_anchor_world_offset,
+            )
+            .or_else(|| {
+                sample_ground_target(
+                    &spatial_query,
+                    rig.owner,
+                    owner_global_transform,
+                    rig,
+                    ik_settings,
+                )
+            })
+        } else {
             sample_ground_target(
                 &spatial_query,
                 rig.owner,
@@ -343,10 +370,14 @@ fn update_grounded_two_bone_ik_walk_targets(
                 rig,
                 ik_settings,
             )
-        }) else {
-            commands
-                .entity(rig_entity)
-                .remove::<(GroundedTwoBoneIkWalkLegState, GroundedTwoBoneIkTargetOverride)>();
+        };
+        let Some(sampled_target) = sampled_target else {
+            clear_walk_components(
+                &mut commands,
+                rig_entity,
+                has_leg_state,
+                has_target_override,
+            );
             continue;
         };
 
@@ -364,7 +395,7 @@ fn update_grounded_two_bone_ik_walk_targets(
             let effective_target = tick_walk_leg_state(
                 &mut leg_state,
                 sampled_target,
-                walk_settings,
+                *walk_settings,
                 dt,
                 phase_ready,
             );
@@ -408,14 +439,20 @@ fn tick_walk_leg_state(
 ) -> Vec3 {
     state.cooldown_remaining = (state.cooldown_remaining - dt).max(0.0);
 
-    let planted_drift = state.planted_target.distance(sampled_target);
-    let phase_break =
-        planted_drift >= settings.max_plant_distance * WALK_PHASE_BREAK_DISTANCE_MULTIPLIER;
+    let max_plant_distance_sq = settings.max_plant_distance * settings.max_plant_distance;
+    let phase_break_distance_sq = max_plant_distance_sq
+        * WALK_PHASE_BREAK_DISTANCE_MULTIPLIER
+        * WALK_PHASE_BREAK_DISTANCE_MULTIPLIER;
+    let emergency_replant_distance_sq = max_plant_distance_sq
+        * WALK_EMERGENCY_REPLANT_MULTIPLIER
+        * WALK_EMERGENCY_REPLANT_MULTIPLIER;
+    let planted_drift_sq = state.planted_target.distance_squared(sampled_target);
+    let phase_break = planted_drift_sq >= phase_break_distance_sq;
 
     if !state.stepping {
         let cooldown_ready = state.cooldown_remaining <= 0.0 || phase_break;
         let can_start = phase_ready || phase_break;
-        if planted_drift >= settings.max_plant_distance && cooldown_ready && can_start {
+        if planted_drift_sq >= max_plant_distance_sq && cooldown_ready && can_start {
             start_step(state, sampled_target, settings);
         } else if phase_break {
             replant_immediately(state, sampled_target, settings);
@@ -434,12 +471,11 @@ fn tick_walk_leg_state(
     let t = (state.step_elapsed / state.step_duration).clamp(0.0, 1.0);
     let eased_t = smoothstep(t);
     let base_target = state.step_start.lerp(state.step_end, eased_t);
-    let lift = (eased_t * PI).sin().max(0.0) * settings.step_height;
+    let centered_t = 2.0 * eased_t - 1.0;
+    let lift = (1.0 - centered_t * centered_t).max(0.0) * settings.step_height;
     let stepped_target = base_target + Vec3::Y * lift;
 
-    if stepped_target.distance(sampled_target)
-        >= settings.max_plant_distance * WALK_EMERGENCY_REPLANT_MULTIPLIER
-    {
+    if stepped_target.distance_squared(sampled_target) >= emergency_replant_distance_sq {
         replant_immediately(state, sampled_target, settings);
         return sampled_target;
     }
@@ -447,7 +483,7 @@ fn tick_walk_leg_state(
     if t >= 1.0 {
         state.stepping = false;
         state.planted_target = state.step_end;
-        if state.planted_target.distance(sampled_target) > settings.max_plant_distance {
+        if state.planted_target.distance_squared(sampled_target) > max_plant_distance_sq {
             state.cooldown_remaining = 0.0;
         } else {
             state.cooldown_remaining = settings.min_step_interval;
@@ -514,8 +550,22 @@ fn phase_distance(a: f32, b: f32) -> f32 {
 }
 
 fn compute_forward_distance(settings: GroundedTwoBoneIkWalkSettings, travel_speed: f32) -> f32 {
-    let dynamic_distance = settings.step_forward_distance + travel_speed * settings.step_forward_speed_scale;
+    let dynamic_distance =
+        settings.step_forward_distance + travel_speed * settings.step_forward_speed_scale;
     dynamic_distance.clamp(0.0, settings.step_forward_max_distance)
+}
+
+fn clear_walk_components(
+    commands: &mut Commands,
+    rig_entity: Entity,
+    has_leg_state: bool,
+    has_target_override: bool,
+) {
+    if has_leg_state || has_target_override {
+        commands
+            .entity(rig_entity)
+            .remove::<(GroundedTwoBoneIkWalkLegState, GroundedTwoBoneIkTargetOverride)>();
+    }
 }
 
 fn planar_direction_or(input: Vec3, fallback: Vec3) -> Vec3 {
