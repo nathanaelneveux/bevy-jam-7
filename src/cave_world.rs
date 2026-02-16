@@ -32,6 +32,12 @@ impl Default for CaveWorld {
     }
 }
 
+impl CaveWorld {
+    pub(crate) fn sample_column_bounds(&self, x: i32, z: i32) -> (i32, i32) {
+        self.noise.sample_column(x, z)
+    }
+}
+
 impl VoxelWorldConfig for CaveWorld {
     type MaterialIndex = u8;
     type ChunkUserBundle = ();
