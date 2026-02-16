@@ -3,12 +3,12 @@ use bevy::prelude::*;
 use crate::ground_ik::{GroundedTwoBoneIkLegInit, GroundedTwoBoneIkRig, init_leg_rigs};
 
 #[derive(Component)]
-pub(crate) struct VirusIkVisualRoot {
+pub(crate) struct VirusVisualRoot {
     pub(crate) owner: Entity,
 }
 
 #[derive(Component)]
-pub(crate) struct VirusIkRigReady;
+pub(crate) struct VirusRigReady;
 
 #[derive(Clone, Copy)]
 enum VirusLegJoint {
@@ -44,7 +44,7 @@ enum VirusLegId {
 
 pub(crate) fn init_virus_leg_rig(
     mut commands: Commands,
-    visual_roots: Query<(Entity, &VirusIkVisualRoot), Without<VirusIkRigReady>>,
+    visual_roots: Query<(Entity, &VirusVisualRoot), Without<VirusRigReady>>,
     children_query: Query<&Children>,
     names: Query<&Name>,
     local_transforms: Query<&Transform>,
@@ -81,15 +81,6 @@ pub(crate) fn init_virus_leg_rig(
             }
         }
 
-        // virus.glb has no explicit Foot* bones in this rig; infer endpoint from knee descendants.
-        for rig_match in &mut leg_matches {
-            if rig_match.foot.is_none()
-                && let Some(knee) = rig_match.knee
-            {
-                rig_match.foot = find_leg_end_fallback(knee, &children_query, &local_transforms);
-            }
-        }
-
         let mut complete_leg_count = 0usize;
         let mut leg_inits = Vec::new();
         for (index, rig_match) in leg_matches.iter().enumerate() {
@@ -120,7 +111,7 @@ pub(crate) fn init_virus_leg_rig(
         );
 
         if complete_leg_count == 4 {
-            commands.entity(visual_root).insert(VirusIkRigReady);
+            commands.entity(visual_root).insert(VirusRigReady);
         }
     }
 }
@@ -181,37 +172,37 @@ fn virus_leg_bone_definition(name: &str) -> Option<VirusRigBoneDefinition> {
             side_sign: 1.0,
             fore_sign: 1.0,
         }),
-        "HipBack.L" => Some(VirusRigBoneDefinition {
+        "HipRear.L" => Some(VirusRigBoneDefinition {
             leg: VirusLegId::RearLeft,
             joint: VirusLegJoint::Hip,
             side_sign: -1.0,
             fore_sign: -1.0,
         }),
-        "KneeBack.L" => Some(VirusRigBoneDefinition {
+        "KneeRear.L" => Some(VirusRigBoneDefinition {
             leg: VirusLegId::RearLeft,
             joint: VirusLegJoint::Knee,
             side_sign: -1.0,
             fore_sign: -1.0,
         }),
-        "FootBack.L" => Some(VirusRigBoneDefinition {
+        "FootRear.L" => Some(VirusRigBoneDefinition {
             leg: VirusLegId::RearLeft,
             joint: VirusLegJoint::Foot,
             side_sign: -1.0,
             fore_sign: -1.0,
         }),
-        "HipBack.R" => Some(VirusRigBoneDefinition {
+        "HipRear.R" => Some(VirusRigBoneDefinition {
             leg: VirusLegId::RearRight,
             joint: VirusLegJoint::Hip,
             side_sign: 1.0,
             fore_sign: -1.0,
         }),
-        "KneeBack.R" => Some(VirusRigBoneDefinition {
+        "KneeRear.R" => Some(VirusRigBoneDefinition {
             leg: VirusLegId::RearRight,
             joint: VirusLegJoint::Knee,
             side_sign: 1.0,
             fore_sign: -1.0,
         }),
-        "FootBack.R" => Some(VirusRigBoneDefinition {
+        "FootRear.R" => Some(VirusRigBoneDefinition {
             leg: VirusLegId::RearRight,
             joint: VirusLegJoint::Foot,
             side_sign: 1.0,
@@ -228,35 +219,4 @@ fn virus_leg_debug_color(leg: VirusLegId) -> Color {
         VirusLegId::RearLeft => Color::srgb(0.35, 0.55, 0.95),
         VirusLegId::RearRight => Color::srgb(0.95, 0.75, 0.25),
     }
-}
-
-fn find_leg_end_fallback(
-    knee: Entity,
-    children_query: &Query<&Children>,
-    local_transforms: &Query<&Transform>,
-) -> Option<Entity> {
-    let mut best: Option<(f32, Entity)> = None;
-    let mut stack = vec![knee];
-
-    while let Some(entity) = stack.pop() {
-        if let Ok(children) = children_query.get(entity) {
-            for child in children.iter() {
-                stack.push(child);
-            }
-        }
-
-        if entity == knee {
-            continue;
-        }
-
-        let Ok(local_transform) = local_transforms.get(entity) else {
-            continue;
-        };
-        let dist2 = local_transform.translation.length_squared();
-        if best.is_none_or(|(best_dist2, _)| dist2 > best_dist2) {
-            best = Some((dist2, entity));
-        }
-    }
-
-    best.map(|(_, entity)| entity)
 }

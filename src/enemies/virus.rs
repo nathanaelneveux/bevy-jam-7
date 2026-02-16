@@ -15,7 +15,7 @@ use crate::{
     player_controller::Player,
 };
 
-use super::virus_ik::{VirusIkVisualRoot, init_virus_leg_rig};
+use super::virus_ik::{VirusVisualRoot, init_virus_leg_rig};
 
 const VIRUS_MODEL_ASSET_PATH: &str = "virus.glb#Scene0";
 const VIRUS_ARCHETYPE_ASSET_PATH: &str = "enemies/virus.enemy.ron";
@@ -51,11 +51,6 @@ impl Plugin for VirusEnemyPlugin {
 
 #[derive(Component)]
 struct VirusEnemy;
-
-#[derive(Component)]
-struct VirusVisualRoot {
-    owner: Entity,
-}
 
 #[derive(Component)]
 struct VirusHeadAttachment(Entity);
@@ -271,7 +266,6 @@ fn spawn_virus_enemy(
         parent.spawn((
             Name::new("VirusEnemyVisual"),
             VirusVisualRoot { owner: virus },
-            VirusIkVisualRoot { owner: virus },
             SceneRoot(scene_handle.0.clone()),
             Transform {
                 translation: Vec3::new(0.0, archetype.visual_y_offset, 0.0),
