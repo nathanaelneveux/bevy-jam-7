@@ -241,7 +241,7 @@ impl Default for GroundedTwoBoneIkSettings {
     fn default() -> Self {
         Self {
             enabled: true,
-            draw_gizmos: true,
+            draw_gizmos: false,
             ray_origin_up: IK_DEFAULT_RAY_ORIGIN_UP,
             ray_distance: IK_DEFAULT_RAY_DISTANCE,
             target_foot_offset: IK_DEFAULT_TARGET_FOOT_OFFSET,
@@ -318,16 +318,18 @@ fn sanitize_grounded_two_bone_ik_settings(
 }
 
 /// Acquires a grounded target for a leg via downward raycast from its owner-space
-/// rest anchor, using the provided grounded IK settings.
-pub(crate) fn sample_ground_target(
+/// rest anchor, offset in world-space before raycasting.
+pub(crate) fn sample_ground_target_with_world_offset(
     spatial_query: &SpatialQuery,
     owner: Entity,
     owner_global_transform: &GlobalTransform,
     rig: &GroundedTwoBoneIkRig,
     settings: &GroundedTwoBoneIkSettings,
+    ray_anchor_world_offset: Vec3,
 ) -> Option<Vec3> {
     let settings = settings.sanitize();
-    let ray_anchor_world = owner_global_transform.transform_point(rig.foot_rest_owner_space);
+    let ray_anchor_world =
+        owner_global_transform.transform_point(rig.foot_rest_owner_space) + ray_anchor_world_offset;
     let ray_origin = ray_anchor_world + Vec3::Y * settings.ray_origin_up;
     let filter = SpatialQueryFilter::from_excluded_entities([owner]);
     let hit = spatial_query.cast_ray(
@@ -339,6 +341,25 @@ pub(crate) fn sample_ground_target(
     )?;
     let hit_point = ray_origin + Vec3::NEG_Y * hit.distance;
     Some(hit_point + Vec3::Y * settings.target_foot_offset)
+}
+
+/// Acquires a grounded target for a leg via downward raycast from its owner-space
+/// rest anchor, using the provided grounded IK settings.
+pub(crate) fn sample_ground_target(
+    spatial_query: &SpatialQuery,
+    owner: Entity,
+    owner_global_transform: &GlobalTransform,
+    rig: &GroundedTwoBoneIkRig,
+    settings: &GroundedTwoBoneIkSettings,
+) -> Option<Vec3> {
+    sample_ground_target_with_world_offset(
+        spatial_query,
+        owner,
+        owner_global_transform,
+        rig,
+        settings,
+        Vec3::ZERO,
+    )
 }
 
 /// Grounded solve pass:
