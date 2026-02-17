@@ -12,7 +12,7 @@ use crate::{
     player_controller::Player,
 };
 
-use super::ai::{EnemyAiBrain, EnemyAiPersonality, EnemyAiState, desired_engage_goal};
+use super::ai::{EnemyAiBrain, EnemyAiPersonality, EnemyAiState, EnemyHealth, desired_engage_goal};
 use super::virus_ik::{VirusVisualRoot, init_virus_leg_rig};
 
 const VIRUS_MODEL_ASSET_PATH: &str = "virus.glb#Scene0";
@@ -128,6 +128,7 @@ struct VirusEnemyArchetype {
     arrival_tolerance: f32,
     #[serde(default)]
     ai: EnemyAiPersonality,
+    hit_points: f32,
     body_turn_speed_rad_per_sec: f32,
     attack_range: f32,
     attack_cooldown_secs: f32,
@@ -154,6 +155,7 @@ impl VirusEnemyArchetype {
             move_speed: self.move_speed.clamp(0.2, 40.0),
             arrival_tolerance: self.arrival_tolerance.clamp(0.1, 8.0),
             ai,
+            hit_points: self.hit_points.clamp(1.0, 500.0),
             body_turn_speed_rad_per_sec: self.body_turn_speed_rad_per_sec.clamp(0.1, 30.0),
             attack_range: self
                 .attack_range
@@ -259,6 +261,10 @@ fn spawn_virus_enemy(
             Transform::from_translation(spawn_translation),
         ))
         .id();
+
+    commands
+        .entity(virus)
+        .insert(EnemyHealth::with_max(archetype.hit_points));
 
     commands.entity(virus).with_children(|parent| {
         parent.spawn((

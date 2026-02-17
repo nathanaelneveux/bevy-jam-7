@@ -13,7 +13,7 @@ use crate::{
     player_controller::Player,
 };
 
-use super::ai::{EnemyAiBrain, EnemyAiPersonality};
+use super::ai::{EnemyAiBrain, EnemyAiPersonality, EnemyHealth};
 use super::spider_ik::{SpiderVisualRoot, init_spider_leg_rig};
 
 const GOLDEN_ANGLE: f32 = 2.399_963_1;
@@ -84,6 +84,7 @@ struct SpiderEnemyArchetype {
     arrival_tolerance: f32,
     #[serde(default)]
     ai: EnemyAiPersonality,
+    hit_points: f32,
     body_turn_speed_rad_per_sec: f32,
     visual_y_offset: f32,
     visual_yaw_offset_degrees: f32,
@@ -104,6 +105,7 @@ impl SpiderEnemyArchetype {
             move_speed: self.move_speed.clamp(0.1, 30.0),
             arrival_tolerance: self.arrival_tolerance.clamp(0.05, 3.0),
             ai: self.ai.sanitized(),
+            hit_points: self.hit_points.clamp(1.0, 500.0),
             body_turn_speed_rad_per_sec: self.body_turn_speed_rad_per_sec.clamp(0.1, 25.0),
             visual_y_offset: self.visual_y_offset.clamp(-8.0, 8.0),
             visual_yaw_offset_degrees: self.visual_yaw_offset_degrees,
@@ -188,6 +190,7 @@ fn spawn_spider_enemy(
             },
             archetype.ai,
             EnemyAiBrain::seeded(spawn_state.spawn_index as u32),
+            EnemyHealth::with_max(archetype.hit_points),
             GroundedTwoBoneIkOwner,
             GroundedTwoBoneIkWalk,
             Transform::from_translation(spawn_translation),

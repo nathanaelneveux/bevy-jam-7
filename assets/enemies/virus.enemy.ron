@@ -5,9 +5,10 @@
     spawn_max_distance: 30.0,
     spawn_height_offset: 1.5,
     collider_radius: 0.35,
-    collider_half_length: 0.7,
+    collider_half_length: 1.7,
     move_speed: 4.2,
     arrival_tolerance: 0.45,
+    hit_points: 16.0,
     ai: (
         blocked_to_idle_secs: 0.75,
         idle_to_patrol_secs: 1.4,

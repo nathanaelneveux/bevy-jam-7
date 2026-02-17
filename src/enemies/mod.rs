@@ -6,6 +6,8 @@ mod virus_ik;
 
 use bevy::prelude::*;
 
+pub(crate) use ai::EnemyHealth;
+
 pub struct EnemyPlugin;
 
 impl Plugin for EnemyPlugin {

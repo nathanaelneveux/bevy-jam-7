@@ -20,6 +20,23 @@ impl Plugin for EnemyAiPlugin {
     }
 }
 
+#[derive(Component, Clone, Copy, Debug)]
+pub(crate) struct EnemyHealth {
+    pub(crate) current: f32,
+}
+
+impl EnemyHealth {
+    pub(crate) fn with_max(max: f32) -> Self {
+        let max = max.max(1.0);
+        Self { current: max }
+    }
+
+    pub(crate) fn apply_damage(&mut self, damage: f32) -> bool {
+        self.current = (self.current - damage.max(0.0)).max(0.0);
+        self.current <= 0.0
+    }
+}
+
 #[derive(Component, Clone, Copy, Debug, Deserialize)]
 pub(crate) struct EnemyAiPersonality {
     pub(crate) blocked_to_idle_secs: f32,
