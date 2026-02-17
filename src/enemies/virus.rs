@@ -8,13 +8,11 @@ use crate::{
     cave_world::CaveWorld,
     ground_ik::{GroundIkSet, GroundedTwoBoneIkOwner},
     ground_ik_walk::GroundedTwoBoneIkWalk,
-    mob_nav::{
-        MobNavAgent, MobNavGoal, MobNavMovementMode, MobNavPath, MobNavRepath, MobNavStatus,
-        MobNavUpdateSet,
-    },
+    mob_nav::{MobNavAgent, MobNavGoal, MobNavMovementMode},
     player_controller::Player,
 };
 
+use super::ai::{EnemyAiBrain, EnemyAiPersonality, EnemyAiState, desired_engage_goal};
 use super::virus_ik::{VirusVisualRoot, init_virus_leg_rig};
 
 const VIRUS_MODEL_ASSET_PATH: &str = "virus.glb#Scene0";
@@ -37,8 +35,6 @@ impl Plugin for VirusEnemyPlugin {
                 (
                     cache_loaded_virus_enemy_archetype,
                     spawn_virus_enemy,
-                    update_virus_standoff_goals.after(MobNavUpdateSet::ApplyResults),
-                    retry_blocked_viruses.after(MobNavUpdateSet::ApplyResults),
                     face_virus_toward_player,
                     attach_virus_head_markers,
                     fire_virus_lasers,
@@ -130,9 +126,8 @@ struct VirusEnemyArchetype {
     collider_half_length: f32,
     move_speed: f32,
     arrival_tolerance: f32,
-    standoff_distance: f32,
-    standoff_reposition_slack: f32,
-    blocked_repath_interval_secs: f32,
+    #[serde(default)]
+    ai: EnemyAiPersonality,
     body_turn_speed_rad_per_sec: f32,
     attack_range: f32,
     attack_cooldown_secs: f32,
@@ -145,7 +140,7 @@ struct VirusEnemyArchetype {
 
 impl VirusEnemyArchetype {
     fn sanitized(&self) -> Self {
-        let standoff_distance = self.standoff_distance.clamp(3.0, 64.0);
+        let ai = self.ai.sanitized();
         Self {
             max_alive: self.max_alive.max(1),
             spawn_interval_secs: self.spawn_interval_secs.clamp(0.1, 60.0),
@@ -158,11 +153,12 @@ impl VirusEnemyArchetype {
             collider_half_length: self.collider_half_length.clamp(0.05, 3.0),
             move_speed: self.move_speed.clamp(0.2, 40.0),
             arrival_tolerance: self.arrival_tolerance.clamp(0.1, 8.0),
-            standoff_distance,
-            standoff_reposition_slack: self.standoff_reposition_slack.clamp(0.2, 12.0),
-            blocked_repath_interval_secs: self.blocked_repath_interval_secs.clamp(0.05, 10.0),
+            ai,
             body_turn_speed_rad_per_sec: self.body_turn_speed_rad_per_sec.clamp(0.1, 30.0),
-            attack_range: self.attack_range.max(standoff_distance).clamp(3.0, 100.0),
+            attack_range: self
+                .attack_range
+                .max(ai.attack_enter_distance)
+                .clamp(3.0, 100.0),
             attack_cooldown_secs: self.attack_cooldown_secs.clamp(0.05, 10.0),
             laser_speed: self.laser_speed.clamp(1.0, 300.0),
             laser_lifetime_secs: self.laser_lifetime_secs.clamp(0.05, 10.0),
@@ -230,10 +226,10 @@ fn spawn_virus_enemy(
         &cave_world,
     );
 
-    let initial_goal = standoff_goal(
+    let initial_goal = desired_engage_goal(
         spawn_translation,
         player_position,
-        archetype.standoff_distance,
+        archetype.ai.preferred_distance,
     );
 
     let virus = commands
@@ -253,6 +249,8 @@ fn spawn_virus_enemy(
             MobNavGoal {
                 position: initial_goal,
             },
+            archetype.ai,
+            EnemyAiBrain::seeded((spawn_state.spawn_index as u32) ^ 0xA511_E9B3),
             VirusAttackState {
                 cooldown: Timer::from_seconds(archetype.attack_cooldown_secs, TimerMode::Repeating),
             },
@@ -274,89 +272,6 @@ fn spawn_virus_enemy(
             },
         ));
     });
-}
-
-fn update_virus_standoff_goals(
-    archetype_cache: Res<VirusEnemyArchetypeCache>,
-    player: Query<&GlobalTransform, With<Player>>,
-    mut viruses: Query<
-        (
-            &GlobalTransform,
-            &mut MobNavGoal,
-            Option<&MobNavPath>,
-            Option<&MobNavStatus>,
-        ),
-        With<VirusEnemy>,
-    >,
-) {
-    let Some(archetype) = archetype_cache.archetype.as_ref() else {
-        return;
-    };
-    let Some(player_transform) = player.iter().next() else {
-        return;
-    };
-    let player_position = player_transform.translation();
-
-    for (virus_transform, mut goal, path, status) in &mut viruses {
-        let current = virus_transform.translation();
-        let distance = current.distance(player_position);
-        let desired = standoff_goal(current, player_position, archetype.standoff_distance);
-
-        let should_retarget =
-            (distance - archetype.standoff_distance).abs() > archetype.standoff_reposition_slack;
-        if !should_retarget {
-            continue;
-        }
-
-        if let Some(path) = path
-            && path
-                .waypoints
-                .get(path.next_waypoint)
-                .is_some_and(|next| next.distance(desired) <= archetype.arrival_tolerance * 1.5)
-        {
-            continue;
-        }
-
-        if status.is_some_and(|status| *status == MobNavStatus::Planning) {
-            continue;
-        }
-
-        goal.position = desired;
-    }
-}
-
-fn retry_blocked_viruses(
-    mut commands: Commands,
-    time: Res<Time>,
-    archetype_cache: Res<VirusEnemyArchetypeCache>,
-    viruses: Query<(Entity, &MobNavStatus), With<VirusEnemy>>,
-    mut timer: Local<Option<Timer>>,
-) {
-    let Some(archetype) = archetype_cache.archetype.as_ref() else {
-        return;
-    };
-
-    if timer.as_ref().is_none_or(|timer| {
-        timer.duration().as_secs_f32() != archetype.blocked_repath_interval_secs
-    }) {
-        *timer = Some(Timer::from_seconds(
-            archetype.blocked_repath_interval_secs,
-            TimerMode::Repeating,
-        ));
-    }
-
-    let Some(timer) = timer.as_mut() else {
-        return;
-    };
-    if !timer.tick(time.delta()).just_finished() {
-        return;
-    }
-
-    for (entity, status) in &viruses {
-        if *status == MobNavStatus::Blocked {
-            commands.entity(entity).insert(MobNavRepath);
-        }
-    }
 }
 
 fn face_virus_toward_player(
@@ -442,6 +357,7 @@ fn fire_virus_lasers(
             &GlobalTransform,
             &mut VirusAttackState,
             Option<&VirusHeadAttachment>,
+            &EnemyAiBrain,
         ),
         With<VirusEnemy>,
     >,
@@ -454,7 +370,11 @@ fn fire_virus_lasers(
     };
     let player_position = player_transform.translation();
 
-    for (virus_transform, mut attack_state, head_attachment) in &mut attacks {
+    for (virus_transform, mut attack_state, head_attachment, ai_brain) in &mut attacks {
+        if ai_brain.state != EnemyAiState::Attack {
+            continue;
+        }
+
         if !attack_state.cooldown.tick(time.delta()).just_finished() {
             continue;
         }
@@ -534,15 +454,6 @@ fn sync_spawn_timer_duration(timer: &mut Timer, spawn_interval_secs: f32) {
         return;
     }
     *timer = Timer::from_seconds(spawn_interval_secs, TimerMode::Repeating);
-}
-
-fn standoff_goal(current: Vec3, player: Vec3, standoff_distance: f32) -> Vec3 {
-    let mut away_xz = Vec2::new(current.x - player.x, current.z - player.z);
-    if away_xz.length_squared() <= 0.0001 {
-        away_xz = Vec2::X;
-    }
-    let offset = away_xz.normalize() * standoff_distance;
-    Vec3::new(player.x + offset.x, current.y, player.z + offset.y)
 }
 
 fn next_virus_spawn_translation(

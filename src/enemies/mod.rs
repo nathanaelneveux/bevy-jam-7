@@ -1,3 +1,4 @@
+mod ai;
 mod spider;
 mod spider_ik;
 mod virus;
@@ -9,6 +10,10 @@ pub struct EnemyPlugin;
 
 impl Plugin for EnemyPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((spider::SpiderEnemyPlugin, virus::VirusEnemyPlugin));
+        app.add_plugins((
+            ai::EnemyAiPlugin,
+            spider::SpiderEnemyPlugin,
+            virus::VirusEnemyPlugin,
+        ));
     }
 }

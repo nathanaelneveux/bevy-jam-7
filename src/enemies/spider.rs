@@ -9,12 +9,11 @@ use crate::{
     cave_world::CaveWorld,
     ground_ik::{GroundIkSet, GroundedTwoBoneIkOwner},
     ground_ik_walk::GroundedTwoBoneIkWalk,
-    mob_nav::{
-        MobNavAgent, MobNavGoal, MobNavMovementMode, MobNavRepath, MobNavStatus, MobNavUpdateSet,
-    },
+    mob_nav::{MobNavAgent, MobNavGoal, MobNavMovementMode, MobNavUpdateSet},
     player_controller::Player,
 };
 
+use super::ai::{EnemyAiBrain, EnemyAiPersonality};
 use super::spider_ik::{SpiderVisualRoot, init_spider_leg_rig};
 
 const GOLDEN_ANGLE: f32 = 2.399_963_1;
@@ -36,8 +35,6 @@ impl Plugin for SpiderEnemyPlugin {
                 (
                     cache_loaded_spider_enemy_archetype,
                     spawn_spider_enemy,
-                    update_spider_chase_goals.after(MobNavUpdateSet::ApplyResults),
-                    retry_blocked_spiders.after(MobNavUpdateSet::ApplyResults),
                     face_spiders_toward_movement.after(MobNavUpdateSet::ApplyResults),
                     init_spider_leg_rig.before(GroundIkSet::Solve),
                 ),
@@ -85,8 +82,8 @@ struct SpiderEnemyArchetype {
     collider_half_length: f32,
     move_speed: f32,
     arrival_tolerance: f32,
-    chase_goal_update_distance: f32,
-    blocked_repath_interval_secs: f32,
+    #[serde(default)]
+    ai: EnemyAiPersonality,
     body_turn_speed_rad_per_sec: f32,
     visual_y_offset: f32,
     visual_yaw_offset_degrees: f32,
@@ -106,8 +103,7 @@ impl SpiderEnemyArchetype {
             collider_half_length: self.collider_half_length.clamp(0.05, 3.0),
             move_speed: self.move_speed.clamp(0.1, 30.0),
             arrival_tolerance: self.arrival_tolerance.clamp(0.05, 3.0),
-            chase_goal_update_distance: self.chase_goal_update_distance.clamp(0.1, 20.0),
-            blocked_repath_interval_secs: self.blocked_repath_interval_secs.clamp(0.05, 10.0),
+            ai: self.ai.sanitized(),
             body_turn_speed_rad_per_sec: self.body_turn_speed_rad_per_sec.clamp(0.1, 25.0),
             visual_y_offset: self.visual_y_offset.clamp(-8.0, 8.0),
             visual_yaw_offset_degrees: self.visual_yaw_offset_degrees,
@@ -190,6 +186,8 @@ fn spawn_spider_enemy(
             MobNavGoal {
                 position: player_position,
             },
+            archetype.ai,
+            EnemyAiBrain::seeded(spawn_state.spawn_index as u32),
             GroundedTwoBoneIkOwner,
             GroundedTwoBoneIkWalk,
             Transform::from_translation(spawn_translation),
@@ -208,67 +206,6 @@ fn spawn_spider_enemy(
             },
         ));
     });
-}
-
-fn update_spider_chase_goals(
-    archetype_cache: Res<SpiderEnemyArchetypeCache>,
-    player: Query<&GlobalTransform, With<Player>>,
-    mut spiders: Query<(&GlobalTransform, &mut MobNavGoal), With<SpiderEnemy>>,
-) {
-    let Some(archetype) = archetype_cache.archetype.as_ref() else {
-        return;
-    };
-
-    let Some(player_transform) = player.iter().next() else {
-        return;
-    };
-    let player_position = player_transform.translation();
-
-    for (spider_transform, mut goal) in &mut spiders {
-        let desired_goal = Vec3::new(
-            player_position.x,
-            spider_transform.translation().y,
-            player_position.z,
-        );
-
-        if goal.position.distance(desired_goal) >= archetype.chase_goal_update_distance {
-            goal.position = desired_goal;
-        }
-    }
-}
-
-fn retry_blocked_spiders(
-    mut commands: Commands,
-    time: Res<Time>,
-    archetype_cache: Res<SpiderEnemyArchetypeCache>,
-    spiders: Query<(Entity, &MobNavStatus), With<SpiderEnemy>>,
-    mut timer: Local<Option<Timer>>,
-) {
-    let Some(archetype) = archetype_cache.archetype.as_ref() else {
-        return;
-    };
-
-    if timer.as_ref().is_none_or(|timer| {
-        timer.duration().as_secs_f32() != archetype.blocked_repath_interval_secs
-    }) {
-        *timer = Some(Timer::from_seconds(
-            archetype.blocked_repath_interval_secs,
-            TimerMode::Repeating,
-        ));
-    }
-
-    let Some(timer) = timer.as_mut() else {
-        return;
-    };
-    if !timer.tick(time.delta()).just_finished() {
-        return;
-    }
-
-    for (entity, status) in &spiders {
-        if *status == MobNavStatus::Blocked {
-            commands.entity(entity).insert(MobNavRepath);
-        }
-    }
 }
 
 fn face_spiders_toward_movement(
