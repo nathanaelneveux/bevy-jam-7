@@ -216,15 +216,15 @@ fn try_finish_pending_grid_build(
     rolling: &mut MobNavNorthstarRollingGrid,
 ) {
     let mut completed: Option<(CardinalIsoGrid, IVec3, IVec3, IVec3)> = None;
-    if let Some(pending) = rolling.pending_build.as_mut() {
-        if let Some(grid) = future::block_on(future::poll_once(&mut pending.task)) {
-            completed = Some((
-                grid,
-                pending.center_world,
-                pending.min_world,
-                pending.max_world,
-            ));
-        }
+    if let Some(pending) = rolling.pending_build.as_mut()
+        && let Some(grid) = future::block_on(future::poll_once(&mut pending.task))
+    {
+        completed = Some((
+            grid,
+            pending.center_world,
+            pending.min_world,
+            pending.max_world,
+        ));
     }
 
     let Some((grid, center_world, min_world, max_world)) = completed else {
@@ -267,7 +267,7 @@ fn build_grid_for_cave_world(
             if stand_y < min_world.y || stand_y > max_world_y {
                 continue;
             }
-            if stand_y + agent_height_voxels - 1 >= ceiling_y {
+            if stand_y + agent_height_voxels > ceiling_y {
                 continue;
             }
 
