@@ -13,6 +13,7 @@ use bevy::asset::AssetMetaCheck;
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use bevy_enhanced_input::prelude::EnhancedInputPlugin;
+use bevy_hanabi::HanabiPlugin;
 use bevy_inspector_egui::{bevy_egui::EguiPlugin, quick::WorldInspectorPlugin};
 
 use cave_world::CaveWorldPlugin;
@@ -38,6 +39,7 @@ fn main() {
         }))
         .init_resource::<InspectorMode>()
         .add_plugins(EnhancedInputPlugin)
+        .add_plugins(HanabiPlugin)
         .add_plugins(PhysicsPlugins::default())
         //.add_plugins(PhysicsDebugPlugin)
         .add_plugins(EguiPlugin::default())

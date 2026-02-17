@@ -10,7 +10,7 @@ use bevy_voxel_world::{custom_meshing::CHUNK_SIZE_I, prelude::VoxelWorldCamera};
 use crate::{
     InspectorMode,
     cave_world::{CAVE_WORLD_SPAWNING_DISTANCE, CaveWorld},
-    enemies::EnemyHealth,
+    enemies::{EnemyDebrisPiece, EnemyHealth, EnemyKilledEvent},
 };
 
 const LOOK_SENSITIVITY: f32 = 0.002;
@@ -236,8 +236,11 @@ fn tick_player_energy_bolts(
     mut commands: Commands,
     time: Res<Time>,
     spatial_query: SpatialQuery,
+    mut enemy_killed_events: MessageWriter<EnemyKilledEvent>,
     player: Single<Entity, With<Player>>,
-    mut enemies: Query<&mut EnemyHealth>,
+    mut enemies: Query<(&mut EnemyHealth, &GlobalTransform)>,
+    children_query: Query<&Children>,
+    enemy_meshes: Query<(&Mesh3d, &MeshMaterial3d<StandardMaterial>, &GlobalTransform)>,
     mut bolts: Query<(Entity, &mut PlayerEnergyBolt, &mut Transform)>,
 ) {
     let player_entity = player.into_inner();
@@ -266,9 +269,15 @@ fn tick_player_energy_bolts(
         {
             transform.translation += direction.as_vec3() * hit.distance.min(distance);
 
-            if let Ok(mut health) = enemies.get_mut(hit.entity)
+            if let Ok((mut health, enemy_transform)) = enemies.get_mut(hit.entity)
                 && health.apply_damage(bolt.damage)
             {
+                let debris_pieces =
+                    collect_enemy_debris_pieces(hit.entity, &children_query, &enemy_meshes);
+                enemy_killed_events.write(EnemyKilledEvent {
+                    position: enemy_transform.translation(),
+                    debris_pieces,
+                });
                 commands.entity(hit.entity).despawn();
             }
 
@@ -278,6 +287,38 @@ fn tick_player_energy_bolts(
 
         transform.translation += step;
     }
+}
+
+fn collect_enemy_debris_pieces(
+    enemy: Entity,
+    children_query: &Query<&Children>,
+    enemy_meshes: &Query<(&Mesh3d, &MeshMaterial3d<StandardMaterial>, &GlobalTransform)>,
+) -> Vec<EnemyDebrisPiece> {
+    const MAX_DEBRIS_PIECES: usize = 12;
+
+    let mut pieces = Vec::with_capacity(MAX_DEBRIS_PIECES);
+    let mut stack = vec![enemy];
+    while let Some(entity) = stack.pop() {
+        if pieces.len() >= MAX_DEBRIS_PIECES {
+            break;
+        }
+
+        if let Ok((mesh, material, global_transform)) = enemy_meshes.get(entity) {
+            pieces.push(EnemyDebrisPiece {
+                mesh: mesh.0.clone(),
+                material: material.0.clone(),
+                transform: global_transform.compute_transform(),
+            });
+        }
+
+        if let Ok(children) = children_query.get(entity) {
+            for child in children.iter() {
+                stack.push(child);
+            }
+        }
+    }
+
+    pieces
 }
 
 fn billboard_player_energy_bolts(
