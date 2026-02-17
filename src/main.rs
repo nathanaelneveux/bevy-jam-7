@@ -67,12 +67,12 @@ fn setup(
             shadows_enabled: true,
             ..default()
         },
-        Transform::from_xyz(0.0, 0.0, 0.0).looking_at(Vec3::new(0.3, -1.0, 0.2), Vec3::Y),
+        Transform::from_xyz(0.0, 0.0, 0.0).looking_at(Vec3::new(1.0, -0.2, 0.0), Vec3::Y),
     ));
 
     commands.insert_resource(GlobalAmbientLight {
         color: Color::srgb(0.62, 0.68, 0.78),
-        brightness: 260.0,
+        brightness: 26.0,
         affects_lightmapped_meshes: true,
     });
 }
